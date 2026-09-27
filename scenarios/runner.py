@@ -7,7 +7,8 @@
   success_interval / failure_interval 调度设置（config.yaml 的 tasks 段）；
   冒险/学习/打工/雇佣好友互斥，作为主任务组按 tasks.main_order（默认
   学习>雇佣好友>冒险>打工）统一调度，且非阻塞等待：进行中 OCR 剩余时间后
-  先调度其他任务，到点再收尾计数
+  先调度其他任务，到点再收尾计数；rest1/rest2 休息时段暂停被雇佣检查及
+  护理之外的任务，休息结束自动恢复
 - legacy：老主循环调度（Runner.run），顺序写死：护理检查 -> 冒险 -> 踩踩 -> PK
   -> 好友雇佣 -> 好友护理 -> 学习/打工
 
@@ -16,7 +17,7 @@
   低于 care 阈值则喂食/洗澡到达标
 - 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 学习工作时长规则：学习按学园（初级10/中级20/高级30/进修45 分钟）、
+- 学习工作时长规则：学习按学园（初级10/中级20/高级150/进修45 分钟）、
   打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
   后今天不再学习只打工，第二天自动清零
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
@@ -212,7 +213,7 @@ class Runner:
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
         log(f'金币阈值: {self.threshold}，'
             f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
-            f'（学习按学园 10/20/30/45 分钟、打工按所选时长结算），'
+            f'（学习按学园 10/20/150/45 分钟、打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
         self.visit_times = visit.times_per_day
@@ -858,9 +859,11 @@ class Runner:
 
 # ---- 任务队列调度（engine: task_queue） ----
 
-TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
-              'hire_friend': '雇佣好友', 'friend_care': '好友护理',
-              'school': '学习', 'work': '打工'}
+TASK_NAMES = {'care': '护理', 'friend_care': '好友护理',
+              'rest1': '休息1', 'rest2': '休息2',
+              'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
+              'hire_friend': '雇佣好友', 'school': '学习', 'work': '打工'}
+REST_TASK_KEYS = ('rest1', 'rest2')
 # 支线任务（异常重排期/主任务结束后可等待的任务）。
 # 注：雇佣好友属于主任务组（互斥统一调度），但失败处理仍按支线语义
 # （回主页面 + failure_interval 退避重试，不发告警不退出）
@@ -955,6 +958,8 @@ class TaskQueueRunner(Runner):
         self._main_order: list[str] = list(MAIN_TASK_KEYS)
         self._current_task: str | None = None  # 正在执行的任务名（队列状态展示用）
         self._sched_day: date | None = None  # 调度日期：跨天时清除任务"当天不可继续"标记
+        self._active_rest_key: str | None = None
+        self._rest_until: datetime | None = None
 
     def run(self) -> None:
         if self.use_opener and not self.skip_opener:
@@ -1121,6 +1126,41 @@ class TaskQueueRunner(Runner):
                 return scen
         return None
 
+    @staticmethod
+    def _rest_end_at(now: datetime, start, end) -> datetime:
+        """当前处于休息窗时，返回本次休息结束时间（支持跨零点）。"""
+        end_at = datetime.combine(now.date(), end)
+        if end <= start and now.time() >= start:
+            end_at += timedelta(days=1)
+        return end_at
+
+    @staticmethod
+    def _next_rest_start_at(now: datetime, start) -> datetime:
+        """返回下一个休息开始时间。"""
+        start_at = datetime.combine(now.date(), start)
+        return start_at if start_at > now else start_at + timedelta(days=1)
+
+    def _active_rest(self, tasks: dict, order: list, now: datetime):
+        """返回当前生效的 (休息任务, 结束时间)，未生效返回 None。
+
+        休息任务必须同时出现在 tasks.order、开关已启用、当前位于启用时段。
+        """
+        for key in REST_TASK_KEYS:
+            if key not in order or key not in tasks:
+                continue
+            task = tasks[key]
+            if not task.cfg.enabled:
+                continue
+            try:
+                start, end = _parse_range(
+                    task.cfg.enabled_time_range, f'tasks.{key}.enabled_time_range')
+            except ValueError as e:
+                log(f'{e}，{task.name} 不生效')
+                continue
+            if _in_clock_range(now.time(), start, end):
+                return task, self._rest_end_at(now, start, end)
+        return None
+
     def _school_due(self, tasks: dict, ctx: dict) -> bool:
         """学习是否可执行（主任务组内）：学习工作时长未达上限，且金币 >= 阈值
         （金币识别失败/不足时本来该打工；打工当天不可继续才回退学习）。
@@ -1210,6 +1250,8 @@ class TaskQueueRunner(Runner):
             return self.pk_due()
         if key == 'friend_care':
             return self.friend_care_due()
+        if key in REST_TASK_KEYS:
+            return False  # 休息由 _run_first_due 作为调度屏障处理，不执行场景
         return False
 
     # ---- 执行 ----
@@ -1233,12 +1275,12 @@ class TaskQueueRunner(Runner):
         return None
 
     def _run_first_due(self, tasks: dict, order: list) -> bool:
-        """按 order 扫描，执行第一个可执行的任务，返回是否执行了任务。
-        被雇佣检查不在 tasks.order 里：到点优先于队列任务先检查。"""
+        """按优先级执行一轮。
+
+        已到点的主任务收尾最优先；之后是护理、好友护理；再判断休息屏障。
+        休息期间暂停被雇佣检查及其余队列任务，结束后自动恢复。
+        """
         now = datetime.now()
-        if self.employed_due():
-            self._run_employed_check(tasks, order, now)
-            return True
         # 主任务 pending 到点/即将到点：优先收尾，别让支线把收尾挤后几十秒
         pend_act = self._pending_finish_first()
         if pend_act == 'finish':
@@ -1246,7 +1288,37 @@ class TaskQueueRunner(Runner):
         if pend_act == 'wait':
             return False  # 本轮不执行任务 -> _sleep_until_next 睡到收尾点
         ctx: dict = {}  # 本轮循环的 点数/金币 缓存（_main_due 用）
+        # 休息优先级仅次于护理/好友护理：两类护理先判定，不受休息影响。
         for key in order:
+            if key not in ('care', 'friend_care'):
+                continue
+            task = tasks[key]
+            if self._eligible(task, now) and self._task_due(key, tasks, ctx):
+                self._execute(task, tasks, now, order)
+                return True
+
+        active_rest = self._active_rest(tasks, order, now)
+        if active_rest is not None:
+            task, until = active_rest
+            if self._active_rest_key != task.key:
+                log(f'{task.name}开始：暂停被雇佣检查及护理之外的任务，'
+                    f'{until:%H:%M} 自动恢复')
+            self._active_rest_key = task.key
+            self._rest_until = until
+            self._current_task = task.name
+            return False
+        if self._active_rest_key is not None:
+            log(f'{TASK_NAMES[self._active_rest_key]}结束，恢复任务调度')
+            self._active_rest_key = None
+            self._rest_until = None
+            self._current_task = None
+
+        if self.employed_due():
+            self._run_employed_check(tasks, order, now)
+            return True
+        for key in order:
+            if key in ('care', 'friend_care') or key in REST_TASK_KEYS:
+                continue
             task = tasks[key]
             if not self._eligible(task, now):
                 continue
@@ -1393,6 +1465,15 @@ class TaskQueueRunner(Runner):
             ready += 1
             # 最近的等待点：退避时间 / 下一个每日时间点
             cand = task.next_at if task.next_at > now else None
+            if key in REST_TASK_KEYS:
+                try:
+                    start, _ = _parse_range(
+                        cfg.enabled_time_range, f'tasks.{key}.enabled_time_range')
+                    rest_start = self._next_rest_start_at(now, start)
+                    if cand is None or rest_start < cand:
+                        cand = rest_start
+                except ValueError:
+                    pass
             if cfg.trigger == 'daily':
                 nxt = self._next_daily_time(cfg.daily_times, now)
                 if nxt and (cand is None or nxt < cand):
@@ -1462,6 +1543,10 @@ class TaskQueueRunner(Runner):
         主任务当天结束后仍等待支线任务的失败退避或下一个每日时间点；
         没有任何未来等待点才返回 False（正常结束）。"""
         now = datetime.now()
+        if self._rest_until is not None and self._rest_until > now:
+            delta = (self._rest_until - now).total_seconds()
+            time.sleep(min(max(1.0, delta), QUEUE_POLL_INTERVAL))
+            return True
         if self._main_finished(tasks):
             future = []
             for key in order:

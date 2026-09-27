@@ -52,14 +52,18 @@ DEFAULTS = {
     'friend_care.time_range': '14:00-19:30',
     'friend_care.friend_name': '',
     'friend_care.method': 'ocr检测',
+    'friend_care.energy_target': 70,
+    'friend_care.clean_target': 90,
+    'friend_care.max_scan_count': 20,
     'friend_care.interval_seconds': 60,
     'hire_friend.enabled': False,
     'hire_friend.time_range': '19:31-23:59',
     'hire_friend.interval_seconds': 5,
     'hire_friend.friend_name': '',
+    'hire_friend.max_scan_count': 20,
     'hire_friend.times_per_day': 8,
     'runner.engine': 'task_queue',
-    'tasks.order': 'care>school>friend_care>hire_friend>adventure>visit>pk>work',
+    'tasks.order': 'care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
     'tasks.failure_interval': 1800,
     'care.energy_threshold': 60,
@@ -137,8 +141,14 @@ def validate_field(key: str, value):
         if keys and all(k in MAIN_TASK_KEYS for k in keys):
             return True, '>'.join(keys)
         return False, default
-    if key in ('care.energy_threshold', 'care.clean_threshold'):
+    if key in ('care.energy_threshold', 'care.clean_threshold',
+               'friend_care.energy_target', 'friend_care.clean_target'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
+    if key in ('friend_care.max_scan_count', 'hire_friend.max_scan_count'):
+        try:
+            return (True, int(value)) if 1 <= int(value) <= 999 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
     if key == 'schedule.back_method':
         return (True, value) if value in ('返回图标', '系统返回') else (False, default)
     if key == 'tasks.failure_interval':
@@ -159,7 +169,7 @@ def validate_field(key: str, value):
         except (TypeError, ValueError):
             return False, default
     if key in ('employed.interval_seconds', 'hire_friend.interval_seconds',
-               'care.interval_seconds'):
+               'friend_care.interval_seconds', 'care.interval_seconds'):
         # 调度间隔至少 1 秒（0 会变成无间隔连续调度）
         try:
             return (True, value) if int(value) >= 1 else (False, default)

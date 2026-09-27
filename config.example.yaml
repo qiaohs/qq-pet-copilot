@@ -54,7 +54,7 @@ work:
   employ_scroll_limit: 5
 
 schedule:
-  # 学习工作时长上限（小时）：学习按学园（初级10/中级20/高级30/进修45 分钟）、
+  # 学习工作时长上限（小时）：学习按学园（初级10/中级20/高级150/进修45 分钟）、
   # 打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= 上限后今天不再学习只打工；0 = 不限
   # 旧版字段（仅首次运行迁移用，不再参与调度、不进设置页）：
   # 学习/打工点数系数 = 每节/每次的分钟数，老进度只有次数时据此换算时长
@@ -120,9 +120,14 @@ friend_care:
   time_range: "14:00-19:30"
   # 护理好友名称（支持部分匹配；多个好友用逗号分隔，名称请保持唯一）
   friend_name: ""  # 例如：张三,李四,王五
-  # 护理好友方式：ocr检测（读好友状态面板，体力/清洁护理到 90）/
+  # 护理好友方式：ocr检测（读好友状态面板，按下面目标值护理）/
   # 一键护理（点好友页的一键护理按钮）
   method: ocr检测
+  # 好友喂食/洗澡目标值；体力目标可设低一些，避免喂得太满
+  energy_target: 70
+  clean_target: 90
+  # 每轮最多遍历多少位好友；到上限后找到几个护理几个
+  max_scan_count: 20
   # 调度间隔（秒）：每次调度只做一次护理巡检，距上次巡检至少间隔这么久才再次调度
   interval_seconds: 60
 
@@ -135,6 +140,8 @@ hire_friend:
   interval_seconds: 5
   # 雇佣好友名称（好友列表 content-desc "好友 xxx" 里匹配，支持部分匹配）
   friend_name: ""  # 多个好友可用逗号分隔，例如：张三,李四,王五
+  # 每轮最多遍历多少位好友；到上限后停止本轮查找
+  max_scan_count: 20
   # 每天雇佣好友次数，0 为不雇佣；进度按天持久化
   times_per_day: 8
 
@@ -143,10 +150,10 @@ runner:
   engine: task_queue
 
 # 任务调度：顺序（> 分隔，越靠前越优先，不在 order 里的任务不调度）+ 每任务调度设置
-# 可选任务名：care(护理) adventure(冒险) visit(踩踩) pk(PK)
-#   hire_friend(好友雇佣) friend_care(好友护理) school(学习) work(打工)
+# 可选任务名：care(护理) friend_care(好友护理) rest1/rest2(休息)
+#   adventure(冒险) visit(踩踩) pk(PK) hire_friend(好友雇佣) school(学习) work(打工)
 tasks:
-  order: care>school>friend_care>hire_friend>adventure>visit>pk>work
+  order: care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work
   # 主任务组（冒险/学习/打工/雇佣好友互斥，不能同时做）组内优先级：
   # > 分隔，越靠前越优先；没列出的主任务按默认顺序兜底排最后
   main_order: school>hire_friend>adventure>work
@@ -196,6 +203,19 @@ tasks:
     trigger: interval
     interval_seconds: 60
     enabled_time_range: 00:00:00-23:59:59
+    success_interval: 60
+  # 休息期间仍允许护理和好友护理；暂停被雇佣检查及其他任务。
+  rest1:
+    enabled: true
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 19:46-19:58
+    success_interval: 60
+  rest2:
+    enabled: false
+    trigger: interval
+    interval_seconds: 60
+    enabled_time_range: 00:00-00:01
     success_interval: 60
   school:
     enabled: true

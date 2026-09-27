@@ -1,18 +1,16 @@
-"""好友护理场景：按配置名单依次访问好友家并护理宠物。
+"""好友护理场景：单次遍历好友列表，遇到配置名单中的好友就护理。
 
-流程（好友导航复用 visit.py：累积名单、按顺序切换）：
+流程（好友导航复用 visit.py：累积名单、按列表顺序切换）：
 1. 点击 好友（visit_friends）-> 访问（visit）进入第一个好友宠物页
-2. friend_name 支持中英文逗号分隔多个名称，按顺序逐个查找（名称应唯一）
+2. friend_name 支持中英文逗号分隔多个名称；名单只用于筛选，不要求配置顺序
 3. 按护理好友方式（friend_care.method，选项同 care.method）逐个护理：
-   - ocr检测：展开好友状态面板读体力/清洁，不足则喂食/洗澡到 FRIEND_CARE_TARGET（90）
+   - ocr检测：展开好友状态面板读体力/清洁，分别护理到配置目标值
    - 一键护理：好友页有一键护理按钮就点（含"支付并护理"确认），没有视为状态正常跳过
-4. 每位好友结束后关闭好友页面回主页面，再处理下一位。每次调度巡检完整名单，
-   下次调度间隔由 friend_care.interval_seconds 控制（场景内不再等待/
-   切换好友刷新状态——单次巡检无需刷新）
+4. 整轮只打开一次好友页，沿列表走一遍；名单内好友处理完或列表结束后统一返回主页。
 
 配置（config.yaml 的 friend_care 段）：enabled 开关 / time_range 时间段（HH:MM-HH:MM）/
 friend_name 护理好友名称（多个用中英文逗号分隔）/ method 护理好友方式 /
-interval_seconds 调度间隔（秒）。
+max_scan_count 每轮最多遍历好友数 / interval_seconds 调度间隔（秒）。
 
 运行：python scenarios/friend_care.py            （Ctrl+C 停止）
 """
@@ -30,9 +28,8 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario
 from scenarios.care import CARE_METHODS, ONE_CLICK_PAY_RETRIES, CareScenario
 from scenarios.visit import VisitScenario
 
-FRIEND_CARE_TARGET = 90  # ocr检测方式下好友体力/清洁的护理目标值
 MAX_FRIEND_SWITCHES = 30  # 查找/切回目标好友时最多切换次数（防无限切换）
-FRIEND_CARE_RETRIES = 2   # 进好友家/护理偶发卡顿时回主页面重进好友家再试的次数
+FRIEND_CARE_RETRIES = 2   # 当前好友护理偶发卡顿时的原地重试次数
 
 
 def parse_friend_names(value: str) -> list[str]:
@@ -76,9 +73,26 @@ class FriendCareScenario(VisitScenario):
         fc = self.cfg.friend_care
         self.last_care_at: datetime | None = None  # 上次巡检完成时间（调度间隔用）
         log(f'好友护理: {"启用" if fc.enabled else "未启用"}，好友: {fc.friend_name or "未配置"}'
-            f'，方式: {fc.method}，时间段: {fc.time_range}，调度间隔: {fc.interval_seconds}秒')
+            f'，方式: {fc.method}，喂食目标: {fc.energy_target}，洗澡目标: {fc.clean_target}'
+            f'，时间段: {fc.time_range}，调度间隔: {fc.interval_seconds}秒')
 
     # ---- 好友导航 ----
+
+    def begin_friend_walk(self) -> None:
+        """只打开一次好友页，并初始化按好友列表顺序遍历所需的状态。"""
+        self._friends = []
+        self._friend_index = 0
+        self.goto_first_friend()
+
+    def current_friend(self) -> tuple[str, list[tuple[str, int, int]]]:
+        """返回当前好友描述和当前可见列表，并把新出现的好友并入累积名单。"""
+        visible = self._wait_friend_items(required=True)
+        for desc, _, _ in visible:
+            if desc and desc not in self._friends:
+                self._friends.append(desc)
+        if self._friend_index >= len(self._friends):
+            raise RuntimeError('无法确定当前好友')
+        return self._friends[self._friend_index], visible
 
     def switch_to_friend(self, name: str, max_switches: int = MAX_FRIEND_SWITCHES) -> bool:
         """在好友列表里找到名称含 name 的好友并点击切换，返回是否成功。
@@ -124,7 +138,7 @@ class FriendCareScenario(VisitScenario):
         """按护理好友方式护理当前好友家的宠物一次，返回是否执行了护理动作。
 
         times: 冗余字段"护理次数"（预留给后续按次数限制/计数改造，当前不使用）。
-        ocr检测：展开好友状态面板读体力/清洁，不足则喂食/洗澡到 FRIEND_CARE_TARGET；
+        ocr检测：展开好友状态面板读体力/清洁，不足则分别护理到配置目标；
         一键护理：好友页有一键护理按钮就点，没有视为状态正常跳过。
         """
         if self.method == '一键护理':
@@ -146,35 +160,38 @@ class FriendCareScenario(VisitScenario):
                     time.sleep(CLICK_INTERVAL)
             return True
         care = _FriendCare(self.dev)
-        care.energy_threshold = FRIEND_CARE_TARGET
-        care.clean_threshold = FRIEND_CARE_TARGET
+        care.energy_threshold = self.energy_target
+        care.clean_threshold = self.clean_target
         care.toggle_status()
         status = care.read_status_ready()
         source = self.dev.hierarchy()
         energy = status.get('体力')
         clean = status.get('清洁')
-        log(f'好友状态: 体力={energy} 清洁={clean}（目标 {FRIEND_CARE_TARGET}）')
+        log(f'好友状态: 体力={energy}（目标 {self.energy_target}） '
+            f'清洁={clean}（目标 {self.clean_target}）')
         cared = False
-        if energy is not None and energy < FRIEND_CARE_TARGET:
-            log(f'好友体力 {energy} < {FRIEND_CARE_TARGET}，喂食')
+        if energy is not None and energy < self.energy_target:
+            log(f'好友体力 {energy} < {self.energy_target}，喂食')
             care.feed(source)
             cared = True
             source = self.dev.hierarchy()
-        if clean is not None and clean < FRIEND_CARE_TARGET:
-            log(f'好友清洁 {clean} < {FRIEND_CARE_TARGET}，洗澡')
+        if clean is not None and clean < self.clean_target:
+            log(f'好友清洁 {clean} < {self.clean_target}，洗澡')
             care.shower(source)
             cared = True
             source = self.dev.hierarchy()
         if cared:
             source = care.exit_care_mode(source)
-        care.toggle_status(source)
-        log('好友状态检查完成，已收起宠物状态')
+        if care.close_status(source):
+            log('好友状态检查完成，已收起宠物状态')
+        else:
+            log('好友状态检查完成，状态栏未展开')
         return cared
 
     # ---- 入口 ----
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
-        """按配置名单逐个进入好友家护理，处理完一位回主页再处理下一位。
+        """好友页只进入一次，按列表顺序遍历，遇到配置名单中的好友就护理。
 
         每次调度只做一次护理巡检（调度间隔 friend_care.interval_seconds 由
         执行器的 friend_care_due() 控制），场景内不再等待/切换好友刷新状态。
@@ -195,49 +212,76 @@ class FriendCareScenario(VisitScenario):
             raise ValueError(
                 f'config.yaml 中 friend_care.method 配置无效: {self.method!r}，'
                 f'可选: {"/".join(CARE_METHODS)}')
+        self.energy_target = int(fc.energy_target)
+        self.clean_target = int(fc.clean_target)
+        scan_limit = int(getattr(fc, 'max_scan_count', 20))
+        if not 0 <= self.energy_target <= 100 or not 0 <= self.clean_target <= 100:
+            raise ValueError('friend_care.energy_target / clean_target 必须在 0-100 之间')
+        if scan_limit < 1:
+            raise ValueError('friend_care.max_scan_count 必须大于 0')
         start, end = parse_time_range(fc.time_range)
         if not in_time_range(datetime.now().time(), start, end):
             log(f'当前不在好友护理时间段 {fc.time_range} 内，跳过')
             return False
         log(f'好友护理开始: 好友={", ".join(names)}，方式={self.method}，'
-            f'时间段={fc.time_range}')
+            f'喂食目标={self.energy_target}，洗澡目标={self.clean_target}，'
+            f'时间段={fc.time_range}；按好友列表顺序单次遍历，最多 {scan_limit} 位')
         cared_any = False
         checked = 0
         failures = []
+        handled: set[str] = set()
+        scanned = 0
         attempts = self.wait_attempts(FRIEND_CARE_RETRIES)
-        for name in names:
-            cared = False
-            last_error = None
-            for attempt in range(1, attempts + 1):
-                try:
-                    self.ensure_main_page()
-                    self.goto_friend_home(name)
-                    cared = self.care_friend()
-                    self.close()
-                    self.ensure_main_page()
-                    checked += 1
-                    cared_any = cared_any or cared
-                    log(f'好友 {name} 巡检完成'
-                        + ('，本次执行了护理' if cared else '，本次无需护理'))
+        self.ensure_main_page()
+        self.begin_friend_walk()
+        try:
+            while True:
+                desc, visible = self.current_friend()
+                scanned += 1
+                matched = next((name for name in names
+                                if name not in handled and name in desc), None)
+                if matched is not None:
+                    handled.add(matched)
+                    cared = False
+                    last_error = None
+                    log(f'列表遇到护理目标: {desc}（配置名 {matched}）')
+                    for attempt in range(1, attempts + 1):
+                        try:
+                            cared = self.care_friend()
+                            checked += 1
+                            cared_any = cared_any or cared
+                            log(f'好友 {matched} 巡检完成'
+                                + ('，本次执行了护理' if cared else '，本次无需护理'))
+                            break
+                        except Exception as e:
+                            last_error = e
+                            log(f'好友 {matched} 第 {attempt}/{attempts} 次护理尝试失败: {e}')
+                            if attempt < attempts:
+                                time.sleep(CLICK_INTERVAL)
+                    else:
+                        failures.append((matched, last_error))
+                        log(f'好友 {matched} 多次尝试仍失败，继续遍历下一位')
+                if len(handled) >= len(names):
                     break
-                except Exception as e:
-                    last_error = e
-                    log(f'好友 {name} 第 {attempt}/{attempts} 次护理尝试失败: {e}')
-                    try:
-                        self.ensure_main_page()
-                    except Exception as back_error:
-                        log(f'好友 {name} 失败后回主页面未成功: {back_error}')
-                    if attempt < attempts:
-                        time.sleep(CLICK_INTERVAL)
-            else:
-                failures.append((name, last_error))
-                log(f'好友 {name} 多次尝试仍失败，跳过并继续下一位')
+                if scanned >= scan_limit:
+                    log(f'好友护理已遍历 {scanned} 位，达到设置上限，结束本轮查找')
+                    break
+                if not self.next_friend(visible):
+                    break
+        finally:
+            self.close()
+            self.ensure_main_page()
+        missing = [name for name in names if name not in handled]
+        if missing:
+            log('本轮好友列表中未遇到: ' + '、'.join(missing))
         if checked == 0 and failures:
             details = '；'.join(f'{name}: {error}' for name, error in failures)
             raise RuntimeError(f'所有护理好友均巡检失败：{details}')
+        if checked == 0 and not handled:
+            log('本轮遍历范围内未找到已配置的护理好友，按“找到几个算几个”正常结束')
         if failures:
             log('好友护理部分失败: ' + '、'.join(name for name, _ in failures))
-        log(f'好友护理巡检完成: 成功 {checked}/{len(names)} 位'
+        log(f'好友护理巡检完成: 遍历 {scanned}/{scan_limit} 位，成功 {checked}/{len(names)} 位'
             + ('，本轮执行过护理' if cared_any else '，本轮均无需护理'))
         self.last_care_at = datetime.now()
         return True

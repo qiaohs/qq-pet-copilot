@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
+from src.coins import read_coins_from_ocr
 from src.locators import LOCATORS, see_bounds
 from src.ocr import ocr_texts
 from src.progress import log
@@ -155,6 +156,7 @@ class CareScenario(DeviceScenario):
                 f'可选: {"/".join(CARE_METHODS)}')
         log(f'护理方式: {self.method}，体力阈值: {self.energy_threshold}，'
             f'清洁阈值: {self.clean_threshold}')
+        self._status_panel_visible = False
 
     # ---- 状态识别 ----
 
@@ -169,21 +171,53 @@ class CareScenario(DeviceScenario):
         results = ocr_texts(region)
         log('状态区域 OCR: '
             + (', '.join(f'{t!r}@({x},{y})' for t, x, y, _ in results) or '无'))
+        # 状态标题出现即可确认面板已展开；数值可能仍在异步加载。
+        panel_visible = any(
+            name in text.replace(' ', '')
+            for text, *_ in results
+            for name in STATUS_NAMES
+        )
+        # 同一轮里一旦见过标题就保持已展开；后续某帧 OCR 漏字不能触发反向点击。
+        self._status_panel_visible = (
+            getattr(self, '_status_panel_visible', False) or panel_visible)
         # 不做放大：容差按当前屏宽相对 720 参考分辨率等比缩放
         scale = screen.shape[1] / REF_SIZE[0]
-        return parse_status(results, scale)
+        status = parse_status(results, scale)
+        # 排除手机系统状态栏里的电量/时间数字，只看游戏顶部数值栏。
+        coin_results = [item for item in results
+                        if screen.shape[0] * 0.08 <= item[2] <= screen.shape[0] * 0.22]
+        coins = read_coins_from_ocr(coin_results)
+        if coins is not None:
+            status['金币'] = coins
+        return status
 
     def read_status_ready(self, attempts: int = STATUS_READ_RETRIES) -> dict:
         """读状态面板数值：刚展开时数值可能还没加载（OCR 只有账号/宠物名），
         体力/清洁都读到才返回，否则每次重新截图重试（最后一次原样返回）。"""
         status: dict = {}
+        last_coins: int | None = None
+        retried_toggle = False
         for attempt in range(1, attempts + 1):
             screen, source = self.snapshot()
             status = self.read_status(screen, source)
+            if status.get('金币') is not None:
+                last_coins = status['金币']
             if status.get('体力') is not None and status.get('清洁') is not None:
+                if status.get('金币') is None and last_coins is not None:
+                    status['金币'] = last_coins
                 return status
             log(f'状态数值未加载，等待重试 ({attempt}/{attempts})')
+            # 展开点击偶尔会落在 QQ 返回主页的过渡页上。连续两帧都没看到
+            # 体力/清洁/心情标题，说明面板并未展开；用最新控件树补点一次。
+            # 只补点一次，且状态标题已经出现时绝不点，避免把已展开面板关掉。
+            if attempt >= 2 and not retried_toggle and not self._status_panel_visible:
+                log('未检测到已展开的状态栏，重新点击状态按钮')
+                self.toggle_status(source)
+                retried_toggle = True
+                continue
             time.sleep(CLICK_INTERVAL)
+        if status.get('金币') is None and last_coins is not None:
+            status['金币'] = last_coins
         return status
 
     def cache_care_items(self, anchor: str, **status_fields) -> None:
@@ -531,6 +565,15 @@ class CareScenario(DeviceScenario):
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
 
+    def close_status(self, source=None) -> bool:
+        """只在 OCR 已确认状态面板展开时收起，防止失败流程把面板反向打开。"""
+        if not self._status_panel_visible:
+            log('未检测到已展开的状态栏，跳过收起')
+            return False
+        self.toggle_status(source)
+        self._status_panel_visible = False
+        return True
+
     def check_and_care(self) -> None:
         """检查一次体力/清洁，低于阈值则喂食/洗澡，最后收起状态面板。
         护理方式为"一键护理"时不读状态：主页面有一键护理按钮就点，然后直接结束。"""
@@ -552,7 +595,8 @@ class CareScenario(DeviceScenario):
                       pet_name=status.get('宠物名称'),
                       energy=status.get('体力'),
                       clean=status.get('清洁'),
-                      mood=status.get('心情'))
+                      mood=status.get('心情'),
+                      coins=status.get('金币'))
         cared = False
         energy = status.get('体力')
         if energy is not None and energy < self.energy_threshold:
@@ -568,8 +612,10 @@ class CareScenario(DeviceScenario):
             source = self.dev.hierarchy()
         if cared:
             source = self.exit_care_mode(source)
-        self.toggle_status(source)
-        log('状态检查完成，已收起宠物状态')
+        if self.close_status(source):
+            log('状态检查完成，已收起宠物状态')
+        else:
+            log('状态检查完成，状态栏未展开')
 
 
 if __name__ == '__main__':

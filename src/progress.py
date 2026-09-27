@@ -149,7 +149,8 @@ def count_cross(finished: str) -> None:
 SCHOOL_DURATION_SECONDS = {
     '初级学园': 10 * 60,
     '中级学园': 20 * 60,
-    '高级学园': 30 * 60,
+    # 2026-09 游戏实测高级学园一节为 150 分钟；旧值 30 分钟会让统计少算 5 倍。
+    '高级学园': 150 * 60,
     '进修学院': 45 * 60,
 }
 # 打工时长配置 -> 单次打工时长（秒）
@@ -250,6 +251,27 @@ def _ensure_work_duration_floor() -> None:
         f'（原统计 {current // 60} 分钟）')
 
 
+def _repair_advanced_study_duration() -> None:
+    """修正高级学园曾按 30 分钟/次写入的当天时长。
+
+    仅在 ``study_secs`` 恰好等于 ``learned * 30 分钟`` 时修正，避免把混合了
+    不同学园课程的正常记录误改。该判断幂等，修正后不会再次命中。
+    """
+    data = progress_store.read_raw(SCHOOL_PROGRESS_FILE)
+    if data.get('date') != date.today().isoformat() or data.get('school') != '高级学园':
+        return
+    count = progress_store.to_int(data.get('learned', 0))
+    current = progress_store.to_int(data.get('study_secs', 0))
+    old_total = count * 30 * 60
+    if count <= 0 or current != old_total:
+        return
+    corrected = count * SCHOOL_DURATION_SECONDS['高级学园']
+    data['study_secs'] = corrected
+    progress_store.write_raw(SCHOOL_PROGRESS_FILE, data)
+    log(f'修正高级学园学习时长: 今天 {count} 次由 {current // 60} 分钟改为'
+        f' {corrected // 60} 分钟')
+
+
 def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, int]:
     """今天已累计 (学习秒, 打工秒)。
 
@@ -258,6 +280,7 @@ def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, i
     """
     _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', school_factor)
     _migrate_old_durations(WORK_PROGRESS_FILE, 'work_secs', work_factor)
+    _repair_advanced_study_duration()
     _ensure_work_duration_floor()
     return (_today_seconds(SCHOOL_PROGRESS_FILE, 'study_secs'),
             _today_seconds(WORK_PROGRESS_FILE, 'work_secs'))

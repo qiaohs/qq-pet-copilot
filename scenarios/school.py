@@ -181,7 +181,7 @@ class SchoolScenario(DeviceScenario):
         stage = self._detect_stage(results)
         if stage:
             # 学习开始时把当前学园持久化到 school_progress.json（不一致才更新，
-            # 结算时按它累计学习时长：初级10/中级20/高级30/进修45 分钟）
+            # 结算时按它累计学习时长：初级10/中级20/高级150/进修45 分钟）
             set_current_school(stage)
         if stage == '进修学院':
             box = INSTITUTE_ATTRIBUTE_COURSES[self.attribute]

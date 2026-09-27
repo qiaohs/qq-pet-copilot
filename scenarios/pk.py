@@ -228,8 +228,10 @@ class PKScenario(VisitScenario):
             source = self.dev.hierarchy()
         if cared:
             source = care.exit_care_mode(source)
-        care.toggle_status(source)
-        log('PK 前状态检查完成，已收起宠物状态')
+        if care.close_status(source):
+            log('PK 前状态检查完成，已收起宠物状态')
+        else:
+            log('PK 前状态检查完成，状态栏未展开')
 
     @staticmethod
     def _round_limit(max_times: int, done: int) -> int:

@@ -33,15 +33,26 @@ def parse_coin(text: str) -> int | None:
     return int(value)
 
 
-def read_coins(screen: np.ndarray) -> int | None:
-    """OCR 顶部栏，取最右侧可解析为金币的数字，识别失败返回 None。"""
-    h = screen.shape[0]
-    y1, y2 = int(h * COIN_BAR_TOP), int(h * COIN_BAR_BOTTOM)
+def read_coins_from_ocr(
+    results: list[tuple[str, int, int, float]],
+) -> int | None:
+    """从一组 OCR 结果取最右侧的类金币数字。
+
+    状态护理已经 OCR 了屏幕上半部，可复用结果刷新金币，避免再跑一遍 OCR。
+    主页数值从左到右是等级/爪印/金币，因此取最右侧可解析数字。
+    """
     candidates = []
-    for text, x, _y, _ in ocr_fullscreen(screen[y1:y2, :]):
+    for text, x, _y, _ in results:
         coins = parse_coin(text)
         if coins is not None:
             candidates.append((x, coins))
     if not candidates:
         return None
     return max(candidates)[1]
+
+
+def read_coins(screen: np.ndarray) -> int | None:
+    """OCR 顶部栏，取最右侧可解析为金币的数字，识别失败返回 None。"""
+    h = screen.shape[0]
+    y1, y2 = int(h * COIN_BAR_TOP), int(h * COIN_BAR_BOTTOM)
+    return read_coins_from_ocr(ocr_fullscreen(screen[y1:y2, :]))

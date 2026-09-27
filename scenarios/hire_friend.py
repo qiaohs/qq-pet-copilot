@@ -1,11 +1,11 @@
 """好友雇佣场景：访问指定好友家，雇佣好友打工。
 
-流程（好友导航复用 friend_care.py / visit.py：累积名单、按顺序切换）：
+流程（好友导航复用 friend_care.py / visit.py：累积名单、按列表顺序切换）：
 0. 雇佣前预检：出门检测宠物是否正在打工/学习/冒险/被雇佣中（detect_busy_remaining），
    命中则 OCR 剩余时间，抛 TaskDeferred 延后到活动结束（非阻塞，调度层到点再调度）
 1. 点击 好友（visit_friends）-> 访问（visit）进入第一个好友宠物页
-2. 按配置的好友名称顺序尝试（friend_name 可用中英文逗号分隔多个名称），
-   当前好友无法雇佣时返回主页尝试下一位
+2. 好友页只打开一次，沿列表遍历；遇到任一配置好友就检查是否可雇佣，
+   当前好友不可用时直接切换下一位，不要求配置名单顺序
 3. OCR hire 控件（//*[@content-desc="hire"]）范围内是否有雇佣剩余 CD 倒计时
    （如 28:05）：有则跳过当前好友；全部不可用时抛 TaskDeferred 延后复测
 4. 点击 hire 雇佣 -> 跳转到打工面板（面板加载需要时间：点击后固定等
@@ -20,8 +20,8 @@
 
 配置（config.yaml 的 hire_friend 段）：enabled 开关 / time_range 雇佣时间段
 （HH:MM-HH:MM）/ interval_seconds 调度间隔（秒）/ friend_name 雇佣好友名称
-（中英文逗号分隔多个，按顺序尝试）/
-times_per_day 每天雇佣次数（0 不雇佣）。
+（中英文逗号分隔多个，仅用于筛选，不要求顺序）/
+max_scan_count 每轮最多遍历好友数 / times_per_day 每天雇佣次数（0 不雇佣）。
 
 运行：python scenarios/hire_friend.py            （Ctrl+C 停止）
       python scenarios/hire_friend.py --times 2  （覆盖配置的每天雇佣次数，0 为不限）
@@ -78,6 +78,7 @@ class FriendHireScenario(FriendCareScenario):
         hf = self.cfg.hire_friend
         log(f'好友雇佣: {"启用" if hf.enabled else "未启用"}，好友: {hf.friend_name or "未配置"}'
             f'，每天次数: {hf.times_per_day if hf.times_per_day else "不雇佣"}'
+            f'，每轮最多遍历: {getattr(hf, "max_scan_count", 20)} 位'
             f'，时间段: {hf.time_range}，调度间隔: {hf.interval_seconds}秒')
 
     # ---- 雇佣 CD ----
@@ -201,7 +202,7 @@ class FriendHireScenario(FriendCareScenario):
     # ---- 入口 ----
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
-        """回主页面 -> 按顺序尝试候选好友 -> 雇佣打工一轮 -> 计数，
+        """回主页面 -> 单次遍历好友列表选择任一可雇佣目标 -> 雇佣打工一轮 -> 计数，
         直到当天次数满或跑完 max_rounds 轮，结束回主页面。
 
         max_times: 当天雇佣次数上限，0 表示不限；None 表示用配置值。
@@ -215,6 +216,9 @@ class FriendHireScenario(FriendCareScenario):
         if not names:
             log('未配置雇佣好友名称，跳过好友雇佣')
             return False
+        scan_limit = int(getattr(hf, 'max_scan_count', 20))
+        if scan_limit < 1:
+            raise ValueError('hire_friend.max_scan_count 必须大于 0')
         log('雇佣好友候选: ' + ', '.join(names))
         if max_times is None:
             max_times = hf.times_per_day
@@ -231,43 +235,53 @@ class FriendHireScenario(FriendCareScenario):
         if busy is not None:
             kind, secs = busy
             until = datetime.now() + timedelta(seconds=secs)
-            names = {'school': '学习', 'work': '打工', 'adventure': '冒险', 'employed': '被雇佣'}
+            busy_names = {'school': '学习', 'work': '打工',
+                          'adventure': '冒险', 'employed': '被雇佣'}
             raise TaskDeferred(
-                until, f'宠物正在{names[kind]}（剩余约 {secs // 60} 分钟），'
+                until, f'宠物正在{busy_names[kind]}（剩余约 {secs // 60} 分钟），'
                 f'雇佣好友延后到 {until:%H:%M:%S}')
         self.ensure_main_page()  # 出门检测后回到主页面再走好友导航
         round_no = 0
         while True:
             round_no += 1
             log(f'===== 雇佣好友第 {round_no} 轮 =====')
-            for name in names:
-                log(f'尝试雇佣好友: {name}')
-                self.ensure_main_page()
-                try:
-                    self.goto_friend_home(name)
-                except RuntimeError as exc:
-                    if not str(exc).startswith('好友列表中未找到好友: '):
-                        raise
-                    failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
-                    log(f'{name} 当前不可雇佣（{exc}），尝试下一位')
-                    log(f'已计入雇佣失败次数（今天 {failed} 次）')
-                    continue
-                try:
-                    self.wait_hire_ready()
-                    self._enter_work_panel()
-                except FriendUnavailable as exc:
-                    failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
-                    log(f'{name} 当前不可雇佣（{exc}），尝试下一位')
-                    log(f'已计入雇佣失败次数（今天 {failed} 次）')
-                    continue
-                log(f'已选择可雇佣好友: {name}')
-                # 已进入打工面板，此后的错误按原有失败处理，不再换候选好友。
-                self._hire_and_work(panel_ready=True)
-                break
-            else:
+            self.ensure_main_page()
+            self.begin_friend_walk()
+            selected = None
+            seen_targets: set[str] = set()
+            scanned = 0
+            while True:
+                desc, visible = self.current_friend()
+                scanned += 1
+                name = next((candidate for candidate in names
+                             if candidate not in seen_targets and candidate in desc), None)
+                if name is not None:
+                    seen_targets.add(name)
+                    log(f'列表遇到雇佣候选: {desc}（配置名 {name}）')
+                    try:
+                        self.wait_hire_ready()
+                        self._enter_work_panel()
+                    except FriendUnavailable as exc:
+                        failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
+                        log(f'{name} 当前不可雇佣（{exc}），继续遍历下一位')
+                        log(f'已计入雇佣失败次数（今天 {failed} 次）')
+                    else:
+                        selected = name
+                        break
+                if scanned >= scan_limit:
+                    log(f'雇佣好友已遍历 {scanned} 位，达到设置上限，结束本轮查找')
+                    break
+                if not self.next_friend(visible):
+                    break
+            if selected is None:
+                self.close()
                 self.ensure_main_page()
                 until = datetime.now() + timedelta(seconds=HIRE_CD_POLL_SECONDS)
-                raise TaskDeferred(until, '候选好友均不可雇佣，60 秒后重新检查')
+                raise TaskDeferred(
+                    until, f'已检查前 {scanned} 位，未遇到可雇佣候选，60 秒后重新检查')
+            log(f'已选择可雇佣好友: {selected}')
+            # 已进入打工面板，此后的错误按原有失败处理，不再换候选好友。
+            self._hire_and_work(panel_ready=True)
             if self.defer_wait:
                 # 延时收尾模式：计数在 pending 收尾时统一进行（_count_hire_and_work），
                 # 本地 done 不再自增，本轮直接结束

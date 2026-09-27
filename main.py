@@ -63,6 +63,7 @@ from qfluentwidgets import (
     TableWidget,
     Theme,
     TimeEdit,
+    TransparentToolButton,
     setTheme,
 )
 
@@ -302,11 +303,15 @@ TASK_SETTING_FIELDS = [
     ('friend_care.time_range', '好友护理时间段', 'str'),
     ('friend_care.friend_name', '护理好友名称（逗号分隔多个）', 'str'),
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
+    ('friend_care.energy_target', '好友喂食目标体力', 'int'),
+    ('friend_care.clean_target', '好友洗澡目标清洁', 'int'),
+    ('friend_care.max_scan_count', '好友护理最大遍历数', 'int'),
     ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
     ('hire_friend.enabled', '雇佣好友开关', 'bool'),
     ('hire_friend.time_range', '雇佣好友时间段', 'str'),
     ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
     ('hire_friend.friend_name', '雇佣好友名称（逗号分隔多个）', 'str'),
+    ('hire_friend.max_scan_count', '雇佣好友最大遍历数', 'int'),
     ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
     ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('care.energy_threshold', '体力阈值', 'int'),
@@ -319,9 +324,10 @@ TASK_SETTING_FIELDS = [
 ]
 
 # 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）
-SCHEDULE_TASK_NAMES = {'care': '护理', 'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
-                       'hire_friend': '雇佣好友', 'friend_care': '好友护理',
-                       'school': '学习', 'work': '打工'}
+SCHEDULE_TASK_NAMES = {'care': '护理', 'friend_care': '好友护理',
+                       'rest1': '休息1', 'rest2': '休息2',
+                       'adventure': '冒险', 'visit': '踩踩', 'pk': 'PK',
+                       'hire_friend': '雇佣好友', 'school': '学习', 'work': '打工'}
 
 # 设置/任务表单的分组卡片标题：按配置键第一段分组（顺序按字段首次出现）
 SETTING_GROUP_TITLES = {
@@ -553,21 +559,41 @@ class ScrcpyContainer(QWidget):
         style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
         win32gui.SetWindowLong(
             hwnd, win32con.GWL_STYLE,
-            style & ~(win32con.WS_CAPTION | win32con.WS_THICKFRAME
-                      | win32con.WS_MINIMIZEBOX | win32con.WS_MAXIMIZEBOX),
+            (style | win32con.WS_CHILD)
+            & ~(win32con.WS_POPUP | win32con.WS_CAPTION | win32con.WS_THICKFRAME
+                | win32con.WS_MINIMIZEBOX | win32con.WS_MAXIMIZEBOX),
         )
+        # SetParent 不会自动把顶层窗口样式改成子窗口；显式设置 WS_CHILD 后，
+        # 后续 MoveWindow 才会稳定使用容器客户区坐标。
         win32gui.SetWindowPos(
-            hwnd, None, 0, 0, self.width(), self.height(),
-            win32con.SWP_NOZORDER | win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW,
+            hwnd, None, 0, 0, 0, 0,
+            win32con.SWP_NOZORDER | win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+            | win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW,
         )
         self._fit()
         log('scrcpy 窗口已嵌入')
 
+    def _native_client_size(self) -> tuple[int, int]:
+        """返回容器原生客户区像素。
+
+        QWidget 的 width/height 是逻辑像素，Win32 MoveWindow 使用原生像素；Windows
+        开启 125%/150%/200% 显示缩放时直接混用会让 scrcpy 明显偏小。直接读取本
+        容器 HWND 的客户区最准确，异常时再按 Qt 的设备像素比换算。
+        """
+        try:
+            _, _, width, height = win32gui.GetClientRect(int(self.winId()))
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:
+            pass
+        ratio = max(1.0, float(self.devicePixelRatioF()))
+        return round(self.width() * ratio), round(self.height() * ratio)
+
     def _fit(self) -> None:
-        """把 scrcpy 窗口等比缩放到容器内最大并居中，避免内部留黑边。"""
+        """仅缩放显示窗口：等比填入容器，不改变手机截图、点击坐标或任务逻辑。"""
         if not self._hwnd:
             return
-        cw, ch = self.width(), self.height()
+        cw, ch = self._native_client_size()
         # 设备比例未知（未连接/读取失败）时按 9:16 竖屏兜底
         aw, ah = self._aspect if self._aspect and all(self._aspect) else (9, 16)
         scale = min(cw / aw, ch / ah)
@@ -703,6 +729,7 @@ class MainWindow(MSFluentWindow):
         self._emulator_autofill: dict = {}
         # 主页宠物状态卡片：缓存字段 -> 数值标签（每秒刷新，见 _refresh_stats）
         self._status_values: dict = {}
+        self._screen_zoomed = False
 
         self._build_control_widgets()
         self._install_toolbar()
@@ -846,15 +873,31 @@ class MainWindow(MSFluentWindow):
         self._screen_card = SimpleCardWidget()
         screen_layout = QVBoxLayout(self._screen_card)
         screen_layout.setContentsMargins(10, 10, 10, 10)
-        screen_layout.addWidget(self.scrcpy_view)
+        self._screen_scroll = ScrollArea(self._screen_card)
+        self._screen_scroll.setWidget(self.scrcpy_view)
+        # scrcpy_view 尺寸由 _fit_screen_card 显式控制；QScrollArea 的自动 resize
+        # 在真实 Windows 嵌入窗口下会保留 sizeHint，造成红框变大但手机仍是原尺寸。
+        self._screen_scroll.setWidgetResizable(False)
+        self._screen_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._screen_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._screen_scroll.setStyleSheet(
+            'QScrollArea { background: transparent; border: none; }')
+        screen_layout.addWidget(self._screen_scroll)
+        # 浮在画面卡右上角，不占手机画面高度；放大后仍在原位，方便一键还原。
+        self._screen_zoom_button = TransparentToolButton(FIF.ZOOM_IN, self._screen_card)
+        self._screen_zoom_button.setFixedSize(36, 36)
+        self._screen_zoom_button.setToolTip('让手机画面等比适应左侧面板')
+        self._screen_zoom_button.clicked.connect(self._toggle_screen_zoom)
         # 画面卡宽度 = 高度 × 画面比例（_fit_screen_card，窗口缩放/嵌入后重算），
         # 不用 QSplitter：把手在深色主题下会渲染成一条白色竖条，且宽度本就由
         # 高度推导，拖动没有意义
         layout.addWidget(self._screen_card)
 
-        side = QWidget()
-        side.setMinimumWidth(400)
-        side_layout = QVBoxLayout(side)
+        self._home_side = QWidget()
+        self._home_side.setMinimumWidth(400)
+        side_layout = QVBoxLayout(self._home_side)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(12)
         # 状态/任务队列/今日卡垂直方向 Maximum：紧贴内容高度，多余空间全给日志卡
@@ -869,21 +912,63 @@ class MainWindow(MSFluentWindow):
         side_layout.addWidget(queue_card)
         side_layout.addWidget(today_card)
         side_layout.addWidget(self._build_log_card(), 1)
-        layout.addWidget(side, 1)
+        layout.addWidget(self._home_side, 1)
         return page
 
     def _fit_screen_card(self) -> None:
-        """把画面卡宽度收成 高度×画面比例（消除两侧黑边），窗口缩放和嵌入后调用。"""
+        """按手机比例调整左侧卡片；放大态仍保留右侧面板且不裁剪/拉伸。"""
         card = getattr(self, '_screen_card', None)
         if card is None:
             return
+        button = getattr(self, '_screen_zoom_button', None)
+        # 两种模式都让容器负责“完整画面等比适应”，始终禁用滚动条。
+        self._screen_scroll.setWidgetResizable(False)
+        self._screen_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._screen_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         h = card.height() - 20  # 卡片内边距 10×2
         if h <= 0:
             return
         aw, ah = self.scrcpy_view._aspect or (9, 16)
         if not aw or not ah:
             aw, ah = 9, 16
-        card.setFixedWidth(max(300, int(h * aw / ah) + 20))
+        # 适应态按可用高度计算理想宽度；窗口较窄时给右侧至少保留其最小宽度。
+        target = max(300, int(h * aw / ah) + 20)
+        page = card.parentWidget()
+        if page is not None:
+            max_left = page.width() - self._home_side.minimumWidth() - 16
+            target = min(target, max(300, max_left))
+        # 紧凑态接近 scrcpy 原始嵌入尺寸；点击放大后才完整利用左侧可用高度。
+        if not self._screen_zoomed:
+            target = min(target, self.scrcpy_view.sizeHint().width() + 20)
+        card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        card.setFixedWidth(target)
+        if self._screen_zoomed:
+            # 关键：容器本身铺满红框内部 viewport，嵌入的 scrcpy 再由 _fit 使用
+            # min(宽比, 高比) 完整等比缩放；不裁剪、不拉伸，另一方向自动居中留空。
+            viewport = self._screen_scroll.viewport().size()
+            self.scrcpy_view.setFixedSize(max(1, viewport.width()),
+                                          max(1, viewport.height()))
+        else:
+            self.scrcpy_view.setFixedSize(self.scrcpy_view.sizeHint())
+        if button:
+            button.move(max(10, card.width() - button.width() - 10), 10)
+            button.raise_()
+        self.scrcpy_view._fit()
+
+    def _toggle_screen_zoom(self) -> None:
+        """在原始紧凑显示与左侧面板内等比适应之间切换。"""
+        self._screen_zoomed = not self._screen_zoomed
+        if self._screen_zoomed:
+            self._screen_zoom_button.setIcon(FIF.ZOOM_OUT)
+            self._screen_zoom_button.setToolTip('还原手机画面紧凑显示')
+        else:
+            self._screen_zoom_button.setIcon(FIF.ZOOM_IN)
+            self._screen_zoom_button.setToolTip('让手机画面等比适应左侧面板')
+        QTimer.singleShot(0, self._fit_screen_card)
+        # 固定宽度变化后布局会再算一次，补一帧按最终高度精确适应。
+        QTimer.singleShot(50, self._fit_screen_card)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -971,9 +1056,14 @@ class MainWindow(MSFluentWindow):
         return card
 
     def _build_log_card(self) -> HeaderCardWidget:
-        """主页日志卡片：链接可点击；右键可回底部、清屏或打开当日日志。"""
+        """主页日志卡片：标题栏按钮回到底部；右键还有清屏/打开文件。"""
         card = CompactCardWidget()
         card.setTitle('日志')
+        self._log_bottom_button = TransparentToolButton(FIF.DOWN, card)
+        self._log_bottom_button.setToolTip('日志回到底部')
+        self._log_bottom_button.clicked.connect(self._scroll_logs_to_bottom)
+        card.headerLayout.addStretch(1)
+        card.headerLayout.addWidget(self._log_bottom_button)
         card.viewLayout.addWidget(self.log_view, 1)
         return card
 
@@ -1196,13 +1286,17 @@ class MainWindow(MSFluentWindow):
                 'study_h': f'{study_s / 3600:.1f}'.removesuffix('.0'),
                 'work_h': f'{work_s / 3600:.1f}'.removesuffix('.0'),
             }
+            counts = {}
             for label, progress_file, limit in tasks:
                 _, done, _ = load_progress(progress_file, quiet=True)
+                counts[label] = done
                 values[label] = f'{done}/{limit}' if limit else str(done)
                 if label == '踩踩':
                     # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
                     _, exp_done, _ = load_exp_daily(quiet=True)
                     values['经验日常'] = '✓' if exp_done else '✗'
+            # 提前召回没有独立配额，分母显示当天实际冒险次数，便于看召回占比。
+            values['提前召回'] = f'{counts.get("提前召回", 0)}/{counts.get("冒险", 0)}'
             for key, text in values.items():
                 self._today_values[key].setText(text)
         except Exception as e:
@@ -1368,10 +1462,13 @@ class MainWindow(MSFluentWindow):
             spin.setToolTip('调度间隔（秒）')
             spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
             return spin
-        # 学习/打工：主任务组统一调度，无固定间隔
+        # 休息任务只使用开关和启用时段；学习/打工由主任务组统一调度。
         label = BodyLabel('—')
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setToolTip('学习/打工由主任务组（冒险/学习/打工/雇佣好友）按需统一调度，无固定间隔')
+        if key in ('rest1', 'rest2'):
+            label.setToolTip('休息任务只使用开关和启用时段，无执行间隔')
+        else:
+            label.setToolTip('学习/打工由主任务组（冒险/学习/打工/雇佣好友）按需统一调度，无固定间隔')
         return label
 
     def _make_range_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
@@ -1550,6 +1647,20 @@ class MainWindow(MSFluentWindow):
                 return '现在可执行'
             nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
             return self._fmt_next_dt(nxt, now)
+        if key in ('rest1', 'rest2'):
+            try:
+                start_s, _ = str(item.enabled_time_range).split('-', 1)
+            except ValueError:
+                return '—'
+            start_t = self._clock_to_time(start_s.strip())
+            if start_t is None:
+                return '—'
+            if self._in_time_range(now, item.enabled_time_range):
+                return '现在可执行'
+            start_dt = datetime.combine(now.date(), start_t)
+            if start_dt <= now:
+                start_dt += timedelta(days=1)
+            return self._fmt_next_dt(start_dt, now)
         if key in ('school', 'work'):
             return '启动后判定'
         return '—'

@@ -185,8 +185,13 @@ class FriendCareConfig:
     time_range: str = "14:00-19:30"
     # 护理好友名称（好友列表 content-desc "好友 xxx" 里匹配）
     friend_name: str = ""
-    # 护理好友方式：ocr检测（读好友状态面板，体力/清洁护理到 90）/ 一键护理（点好友页的一键护理按钮）
+    # 护理好友方式：ocr检测（读好友状态面板并按下面目标值护理）/ 一键护理（点好友页的一键护理按钮）
     method: str = "ocr检测"
+    # 好友体力/清洁护理目标；拆开配置，避免喂食过满
+    energy_target: int = 70
+    clean_target: int = 90
+    # 每轮最多沿好友列表遍历的人数；到上限后找到几个护理几个，避免为缺失好友翻完整张列表
+    max_scan_count: int = 20
     # 调度间隔（秒）：每次调度只做一次护理巡检，距上次巡检至少间隔这么久才再次调度
     interval_seconds: int = 60
 
@@ -201,13 +206,15 @@ class HireFriendConfig:
     interval_seconds: int = 5
     # 雇佣好友名称（好友列表 content-desc "好友 xxx" 里匹配）
     friend_name: str = ""
+    # 每轮最多沿好友列表遍历的人数，避免候选缺失或均不可雇佣时长时间翻找
+    max_scan_count: int = 20
     # 每天雇佣好友次数，0 为不雇佣
     times_per_day: int = 8
 
 
 # 任务队列调度的任务键（tasks.order 里可配置的任务名）
-TASK_KEYS = ('care', 'adventure', 'visit', 'pk', 'hire_friend', 'friend_care',
-             'school', 'work')
+TASK_KEYS = ('care', 'friend_care', 'rest1', 'rest2', 'adventure', 'visit', 'pk',
+             'hire_friend', 'school', 'work')
 # 主任务组：冒险/学习/打工/雇佣好友互斥（共用"出门-进行中"一条线，不能同时做），
 # 由 TaskQueueRunner 按 tasks.main_order 统一调度
 MAIN_TASK_KEYS = ('adventure', 'school', 'hire_friend', 'work')
@@ -231,7 +238,7 @@ class TaskItemConfig:
 @dataclass
 class TasksConfig:
     # 执行顺序（> 分隔，越靠前越优先）；不在 order 里的任务不调度
-    order: str = "care>school>friend_care>hire_friend>adventure>visit>pk>work"
+    order: str = "care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work"
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>hire_friend>adventure>work"
@@ -239,11 +246,13 @@ class TasksConfig:
     # 覆盖各任务的 failure_interval（只保留这一个入口，避免界面改不到/漏改）
     failure_interval: int = 1800
     care: TaskItemConfig = field(default_factory=TaskItemConfig)
+    friend_care: TaskItemConfig = field(default_factory=TaskItemConfig)
+    rest1: TaskItemConfig = field(default_factory=TaskItemConfig)
+    rest2: TaskItemConfig = field(default_factory=TaskItemConfig)
     adventure: TaskItemConfig = field(default_factory=TaskItemConfig)
     visit: TaskItemConfig = field(default_factory=TaskItemConfig)
     pk: TaskItemConfig = field(default_factory=TaskItemConfig)
     hire_friend: TaskItemConfig = field(default_factory=TaskItemConfig)
-    friend_care: TaskItemConfig = field(default_factory=TaskItemConfig)
     school: TaskItemConfig = field(default_factory=TaskItemConfig)
     work: TaskItemConfig = field(default_factory=TaskItemConfig)
 

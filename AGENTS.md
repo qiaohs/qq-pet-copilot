@@ -242,14 +242,16 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 - **好友护理调度**：`friend_care.enabled` 开启且配置了 `friend_name` 时，主循环按
   `friend_care.time_range`（HH:MM-HH:MM，支持跨零点）+ `friend_care.interval_seconds`
   调度间隔（`friend_care_due()`，距上次巡检完成时间起算）调度；每次调度只做一次
-  护理巡检（进好友家按方式护理一次即回主页面，场景内不再等待/切换好友刷新状态），
+  护理巡检：只进入一次好友页，按好友列表实际顺序遍历，遇到配置名单中的好友就护理，
+  名单仅作筛选、不要求 `qq1,qq2...` 顺序，处理完名单或走完列表后统一回主页面；
   巡检完成无论是否执行护理动作都返回 True（返回 False 会被任务队列标记当天不可
-  继续，导致间隔后不再复查）；护理方式与护理自己一致（ocr检测 护理到 90 / 一键护理），
+  继续，导致间隔后不再复查）；护理方式与护理自己一致（ocr检测 分别护理到
+  `friend_care.energy_target` / `friend_care.clean_target`，默认 70/90；或一键护理），
   好友的体力/库存不写自己的状态缓存；好友面板的竖向名单还没有
   `visit_friend_item`（该控件只存在于进入好友家后的底部轮播），所以
   `goto_first_friend()` 不能在点“访问”前等待/缓存底部好友名单；好友家有概率卡顿（喂食/洗澡面板打不开、
-  页面卡死），场景内失败后回主页面重新进指定好友家再试（`FRIEND_CARE_RETRIES` 次），
-  仍失败才抛给调度器走恢复链路。
+  页面卡死），当前好友原地重试 `FRIEND_CARE_RETRIES` 次，部分目标失败仍继续遍历，
+  全部目标都失败才抛给调度器走恢复链路。
 - **好友雇佣调度**：`hire_friend.enabled` 开启且配置了 `friend_name` 时，主循环在
   `hire_friend.time_range`（HH:MM-HH:MM，支持跨零点）时间段内按
   `hire_friend.interval_seconds`（默认 5 秒，距上次执行起算，`last_hire_at` 在执行处记录，
@@ -262,7 +264,8 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   语义不同）延后到活动结束——队列引擎 catch 后设 `task.next_at = until`，legacy
   引擎记 `retry_after['雇佣好友']`，都不算失败，先调度其他任务；场景内进指定好友家，OCR `hire` 控件上的
   雇佣剩余 CD（如 28:05），有 CD 同样抛 `TaskDeferred` 延后 `HIRE_CD_POLL_SECONDS`
-  （60 秒）复测——不原地等待（CD 可能提前结束）；没有 CD 才点 hire 进打工面板（面板加载固定等 3 秒，
+  （60 秒）复测——不原地等待（CD 可能提前结束）；好友页每轮只进入一次，按列表实际顺序
+  遇到配置候选就检查，第一个可雇佣的立即使用，不要求配置名单顺序；没有 CD 才点 hire 进打工面板（面板加载固定等 3 秒，
   期间可能弹职业升级/获得新职业弹窗，先 `dismiss_career_popup()` 处理再检测，
   未进面板重试点击），按打工流程 select_place 确认/重选打工地点（已是配置地点直接用，
   不是则 back 重置重选）后按 `work.duration` 选工作选择框（10分钟/45分钟/2小时 ->
@@ -279,7 +282,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   不在 `tasks.order` 里——队列引擎到点优先于队列任务先检查（`_run_employed_check`），
   巡检无论是否检测到都返回 True（同好友护理，False 会被标记当天不可继续）；
   - **学习/工作时长规则（替代旧“每日点数”）**：学习结算按持久化的学园字段累计
-    （`school_progress.json` 的 `school`：初级10/中级20/高级30/进修45 分钟，学习开始时
+    （`school_progress.json` 的 `school`：初级10/中级20/高级150/进修45 分钟，学习开始时
     `set_current_school` 不一致才更新）；打工结算按持久化的 `work.duration` 累计
     （`work_progress.json` 的 `duration`：10分钟/45分钟/2小时）。累计时长（秒）存
     `study_secs`/`work_secs`，`load_durations()` 读取（GUI 日志页“今日”显示
