@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.locators import see_bounds
+from src.locators import LOCATORS, see_bounds
 from src.ocr import ocr_texts
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
@@ -40,6 +40,7 @@ STATUS_ROW_TOL = 40  # 名字右侧同行数字的纵向容差
 STATUS_COL_TOL = 80  # 名字下方同列数字的横向容差
 FEED_RESULT_WAIT = 1.5  # 喂食后等数值刷新的时间（秒）
 FEED_PANEL_RETRIES = 4  # 点 feed 后等喂食面板加载（feed_10 或"兑换食物"出现）的重试次数
+SHOWER_PANEL_RETRIES = 4  # 点 shower 后等肥皂/购买入口加载的重试次数
 MAX_FEED_ATTEMPTS = 10    # 喂食最多次数，超过认为异常
 EXCHANGE_FOOD_COUNT = 99  # 饼干不足时金币兑换食物的数量（弹窗输入框默认 5）
 EXCHANGE_POPUP_RETRIES = 3  # 等兑换食物弹窗（数量输入框）出现的重试次数
@@ -293,6 +294,38 @@ class CareScenario(DeviceScenario):
         time.sleep(CLICK_INTERVAL)
         self._pay_buy_popup('10', 'soap_2')
 
+    def _care_item(self, name: str, source=None) -> tuple[int, int, float] | None:
+        """定位喂食/洗澡面板的护理道具，避开好友页底部好友轮播。
+
+        ``feed_10`` / ``shower_10`` 的 XPath 会匹配每个 RecyclerView 的第一项。
+        自己主页通常只有护理道具列表；好友页还多一个底部好友列表，旧逻辑取首个
+        命中会把好友头像当成饼干/肥皂（实测坐标 ``(78, 1255)``）。这里收集全部
+        命中，优先选择底部好友栏上方、且最靠屏幕水平中心的候选。若好友页只剩
+        多个底栏候选，视为护理道具不存在，让调用方进入兑换/购买流程。
+        """
+        entry = LOCATORS[name]
+        candidates: list[tuple[int, int]] = []
+        for path in entry.get('xpath', []):
+            candidates.extend(self.dev.find_xpath_all(path, source=source))
+        # 同一路径/层级可能重复命中同一中心，按顺序去重。
+        candidates = list(dict.fromkeys(candidates))
+        if not candidates:
+            return None
+        w, h = self.dev.window_size()
+        plausible = [(x, y) for x, y in candidates
+                     if 0.15 * w <= x <= 0.85 * w and 0.45 * h <= y <= 0.90 * h]
+        if not plausible:
+            plausible = candidates
+        # 好友底栏中心约在 0.87h；好友护理道具因底栏上移到约 0.69h。
+        # 自己的护理道具也在 0.84h 以上，因此先取底栏上方候选。
+        above_friend_bar = [(x, y) for x, y in plausible if y < 0.84 * h]
+        if above_friend_bar:
+            plausible = above_friend_bar
+        elif len(plausible) > 1 or getattr(self, '_friend_page', False):
+            return None
+        x, y = min(plausible, key=lambda p: (abs(p[0] - w / 2), p[1]))
+        return x, y, 1.0
+
     def feed(self, source=None) -> None:
         """喂食：点 feed -> 反复点 feed_10 并复测体力，直到达到阈值。
         没有 feed_10（饼干不足）时先 _exchange_food() 金币兑换食物再继续；
@@ -304,22 +337,23 @@ class CareScenario(DeviceScenario):
         time.sleep(CLICK_INTERVAL)
         source = self.dev.hierarchy()
         # 好友家页面偶发卡顿，喂食面板加载慢：等 feed_10 或"兑换食物"出现再进喂食循环
-        for attempt in range(1, FEED_PANEL_RETRIES + 1):
-            if self.see('feed_10', source=source) or self.see('exchange_food', source=source):
+        panel_attempts = self.wait_attempts(FEED_PANEL_RETRIES)
+        for attempt in range(1, panel_attempts + 1):
+            if self._care_item('feed_10', source) or self.see('exchange_food', source=source):
                 break
-            log(f'等待喂食面板加载 ({attempt}/{FEED_PANEL_RETRIES})')
+            log(f'等待喂食面板加载 ({attempt}/{panel_attempts})')
             time.sleep(CLICK_INTERVAL)
             source = self.dev.hierarchy()
         exchanged = False  # 每次喂食最多兑换一次（99 个足够），防兑换后仍无 feed_10 死循环
         for attempt in range(1, MAX_FEED_ATTEMPTS + 1):
-            btn = self.see('feed_10', source=source)
+            btn = self._care_item('feed_10', source)
             if not btn:
                 if exchanged:
                     raise RuntimeError('兑换食物后仍未找到 feed_10 按钮')
                 self._exchange_food(source)
                 exchanged = True
                 source = self.dev.hierarchy()
-                if not self.see('feed_10', source=source):
+                if not self._care_item('feed_10', source):
                     # 支付后喂食面板可能被收起（回宠物页）：原地重新点 feed 打开，
                     # 不抛异常——异常会让调度器回主页面重进好友家
                     feed = self.see('feed', source=source)
@@ -369,12 +403,20 @@ class CareScenario(DeviceScenario):
         self.click(hit[0], hit[1])
         time.sleep(CLICK_INTERVAL)
         source = self.dev.hierarchy()
-        soap = self.see('shower_10', source=source)
+        soap = None
+        panel_attempts = self.wait_attempts(SHOWER_PANEL_RETRIES)
+        for attempt in range(1, panel_attempts + 1):
+            soap = self._care_item('shower_10', source)
+            if soap or self.see('buy_soap', source=source):
+                break
+            log(f'等待洗澡面板加载 ({attempt}/{panel_attempts})')
+            time.sleep(CLICK_INTERVAL)
+            source = self.dev.hierarchy()
         if not soap:
             # 香皂不足：金币购买一次（99 个足够，只买一次防死循环）后重新找
             self._buy_soap(source)
             source = self.dev.hierarchy()
-            soap = self.see('shower_10', source=source)
+            soap = self._care_item('shower_10', source)
             if not soap:
                 # 支付后洗澡面板可能被收起（回宠物页）：原地重新点 shower 打开，
                 # 不抛异常——异常会让调度器回主页面重进好友家
@@ -384,7 +426,7 @@ class CareScenario(DeviceScenario):
                     self.click(hit[0], hit[1])
                     time.sleep(CLICK_INTERVAL)
                     source = self.dev.hierarchy()
-                    soap = self.see('shower_10', source=source)
+                    soap = self._care_item('shower_10', source)
             if not soap:
                 raise RuntimeError('购买洗澡道具后仍未找到 shower_10 肥皂')
         w, h = self.dev.window_size()
@@ -420,7 +462,7 @@ class CareScenario(DeviceScenario):
                     log(f'清洁连续 {stall} 回合未提升，按压可能失效，抬手重按肥皂')
                     self.dev.touch_up(*bottom)
                     time.sleep(CLICK_INTERVAL)
-                    soap = self.see('shower_10')
+                    soap = self._care_item('shower_10')
                     if not soap:
                         raise RuntimeError('重按肥皂时未找到 shower_10')
                     self.dev.touch_down(soap[0], soap[1])
@@ -441,7 +483,8 @@ class CareScenario(DeviceScenario):
         for _ in range(5):
             if source is None:
                 source = self.dev.hierarchy()
-            if self.see('feed_10', source=source) or self.see('shower_10', source=source):
+            if (self._care_item('feed_10', source)
+                    or self._care_item('shower_10', source)):
                 if not self.go_back(source=source):
                     raise RuntimeError('退出喂食/洗澡状态失败：未找到 back 按钮')
                 time.sleep(CLICK_INTERVAL)

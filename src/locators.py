@@ -295,11 +295,14 @@ LOCATORS: dict[str, dict] = {
     'exchange_pay': {'xpath': ['//*[starts-with(@content-desc, "支付")'
                                ' and contains(@content-desc, "金币")]']},
     'feed_10': {
+        # 好友页还存在底部好友 RecyclerView；care._care_item 会收集全部匹配并
+        # 选择好友栏上方、最靠屏幕中心的护理道具，不能直接取第一个命中。
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],
     },
     'shower': {'xpath': ['//*[@content-desc="洗澡"]']},
     'shower_10': {
+        # 与 feed_10 相同，好友页必须由 care._care_item 排除底部好友头像。
         'xpath': ['//androidx.recyclerview.widget.RecyclerView'
                   '/android.widget.FrameLayout[1]/android.widget.FrameLayout[1]'],
     },

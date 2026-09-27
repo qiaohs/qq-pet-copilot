@@ -75,15 +75,9 @@ class VisitScenario(DeviceScenario):
             self._goto_first_friend_emulator()
             return
         self.click_until_gone_or_see('visit_friends', 'visit', '打开好友列表')
-        # 进入第一个好友前先缓存可见名单。旧逻辑到好友页后才第一次抓名单，
-        # 左侧列表若尚未渲染就会把空列表误判成“没有更多好友”。
-        visible = self._wait_friend_items()
-        for desc, _, _ in visible:
-            if desc and desc not in self._friends:
-                self._friends.append(desc)
-        if self._friends:
-            log(f'进入好友页前缓存好友名单({len(self._friends)}): '
-                + ', '.join(self._friends))
+        # 这里还是“好友”竖向名单（昵称 + 访问按钮），尚未进入好友宠物页；
+        # visit_friend_item 定位的是进入后底部的“好友 xxx”横向轮播，在此必然为空。
+        # 不做无效的 5 轮预等待，直接点“访问”，进入后再读取底部好友栏。
         # 不额外等固定 1 秒：点访问靠 click_until_gone_or_see 重试（点不中下一轮再点）
         self.click_until_gone_or_see('visit', 'visit_step', '访问好友')
 
@@ -150,7 +144,7 @@ class VisitScenario(DeviceScenario):
             raise RuntimeError('好友列表连续多次为空，无法判断是否还有好友')
         return []
 
-    def next_friend(self) -> bool:
+    def next_friend(self, visible: list[tuple[str, int, int]] | None = None) -> bool:
         """切换到下一个好友：按累积名单顺序点下一个。
 
         好友列表滚动加载，控件树里只有当前可见项：每次重新抓取只把
@@ -158,7 +152,9 @@ class VisitScenario(DeviceScenario):
         基于累积名单；点击目标从当前可见项里按 content-desc 找，
         找不到（还没滚出来）视为没有更多好友。
         """
-        visible = self._wait_friend_items(required=True)
+        # 调用方刚抓过列表时可传进来复用，避免同一画面连续 dump 两次并重复日志。
+        if visible is None:
+            visible = self._wait_friend_items(required=True)
         new = [desc for desc, _, _ in visible if desc and desc not in self._friends]
         for desc in new:
             self._friends.append(desc)

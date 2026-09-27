@@ -64,6 +64,8 @@ class _FriendCare(CareScenario):
     """好友家护理：复用喂食/洗澡/状态面板流程，但不写自己的状态缓存
     （cache_care_items 会把好友的体力/库存写进当前账号缓存，污染 GUI 状态条）。"""
 
+    _friend_page = True  # care._care_item 用于排除底部好友轮播的单项/末尾状态
+
     def cache_care_items(self, anchor: str, **status_fields) -> None:
         pass
 
@@ -103,7 +105,7 @@ class FriendCareScenario(VisitScenario):
                     time.sleep(CLICK_INTERVAL)
                     self._friend_index = self._friends.index(desc)
                     return True
-            if not self.next_friend():
+            if not self.next_friend(visible):
                 return False
         log(f'切换 {max_switches} 次仍未找到好友 {name}')
         return False
