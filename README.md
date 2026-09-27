@@ -179,10 +179,20 @@ exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定�
 | --- | --- |
 | `runs/school_progress.json` | 学习次数 + 历史 + 当前学园（`school`）+ 今日学习时长（`study_secs`） |
 | `runs/work_progress.json` | 打工次数 + 历史 + 本次打工时长（`duration`）+ 今日打工时长（`work_secs`） |
-| `runs/adventure_progress.json` 等 | 冒险/踩踩/PK/被雇佣/雇佣好友/经验日常的每日次数 + 历史 |
+| `runs/adventure_progress.json` 等 | 冒险/踩踩/PK/被雇佣/雇佣成功/经验日常的每日次数 + 历史 |
+| `runs/adventure_recall_progress.json` | 冒险提前召回次数 + 历史 |
+| `runs/hire_friend_failure_progress.json` | 好友未找到、CD 未结束或无法进入雇佣面板的雇佣失败次数 + 历史 |
 | `runs/status_cache.json` | 宠物状态缓存（体力/清洁/心情/金币/库存），GUI 状态条读取 |
 | `runs/queue_status.json` | 任务队列状态（当前任务/下一任务/倒计时），GUI 调度页读取 |
 | `runs/logs/YYYY-MM-DD.log` | 按天的运行日志 |
+
+金币不是持续轮询：调度器回到主页、为学习/打工做选择时只 OCR 顶部状态栏并写入
+`status_cache.json`，GUI 每秒读取缓存。因此上课、打工等任务进行中显示的是上一次
+读数，任务结束并进入下一次主页决策后会刷新；这样可以避免旧手机被高频整屏 OCR 拖慢。
+
+雇佣成功在该次雇佣打工完成后计数，并同时计入一次打工和所选打工时长。若旧版本
+曾出现“有打工次数但漏记时长”，程序会以每次至少 10 分钟为保守下限自动补齐，
+不会缩短已经正确记录的 45 分钟或 2 小时时长。
 
 ## 单模块测试
 

@@ -13,7 +13,7 @@ runs/status_cache.json 单条目（曾经按账号名称组织兼容多账号，
 - care.check_and_care：状态面板 OCR 后写 体力/清洁/心情/宠物名称
 - care 喂食/洗澡结束：OCR 控件附近区域写 香皂/饼干 库存（同时刷新刚喂完/洗完的数值）
 - runner.read_main_coins：主页金币 OCR 后写 金币
-GUI 每 5 秒读一次刷新状态条。缓存只是展示用途，读写失败都不影响调度。
+GUI 每秒读一次刷新状态条。缓存只是展示用途，读写失败都不影响调度。
 """
 from __future__ import annotations
 

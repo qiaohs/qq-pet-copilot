@@ -38,13 +38,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.locators import see_bounds
 from src.ocr import ocr_texts
 from src.progress import (
+    HIRE_FRIEND_FAILURE_PROGRESS_FILE,
     HIRE_FRIEND_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
+    increment_progress,
     load_progress,
     log,
     log_history,
     save_progress,
     record_work_finish,
+    set_current_work_duration,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, TaskDeferred
 from scenarios.friend_care import FriendCareScenario
@@ -136,6 +139,9 @@ class FriendHireScenario(FriendCareScenario):
         """按配置 work.duration 选工作（10分钟/45分钟/2小时 -> select_box_1/2/3）：
         归位选择框后点对应选择框，不做打工流程里的雇佣部分（不进 work_outworker 雇佣面板）。"""
         self.reset_select_boxes()
+        # 普通打工会在选时长时持久化 duration；雇佣好友分支也必须记录，
+        # 否则收尾虽然计入打工次数，却可能无法累计时长或误用上一次时长。
+        set_current_work_duration(self.cfg.work.duration)
         box = DURATION_BOXES.get(self.cfg.work.duration, 'select_box_2')
         hit = self.see(box)
         if not hit:
@@ -242,13 +248,17 @@ class FriendHireScenario(FriendCareScenario):
                 except RuntimeError as exc:
                     if not str(exc).startswith('好友列表中未找到好友: '):
                         raise
+                    failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
                     log(f'{name} 当前不可雇佣（{exc}），尝试下一位')
+                    log(f'已计入雇佣失败次数（今天 {failed} 次）')
                     continue
                 try:
                     self.wait_hire_ready()
                     self._enter_work_panel()
                 except FriendUnavailable as exc:
+                    failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
                     log(f'{name} 当前不可雇佣（{exc}），尝试下一位')
+                    log(f'已计入雇佣失败次数（今天 {failed} 次）')
                     continue
                 log(f'已选择可雇佣好友: {name}')
                 # 已进入打工面板，此后的错误按原有失败处理，不再换候选好友。

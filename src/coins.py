@@ -1,8 +1,8 @@
-"""主页金币数量识别：OCR 整屏，取顶部状态栏最右侧的类金币数字。
+"""主页金币数量识别：只 OCR 顶部状态栏，取最右侧的类金币数字。
 
 主页顶部状态栏从左到右依次是 星星 / 爪印 / 金币 三个数值，
 金币在最右侧；格式如 "1.6k"（=1600），也兼容纯数字和 w/万 单位。
-（原实现靠 main_sign 模板定位后裁剪右侧区域，现改为全屏 OCR，分辨率无关。）
+按屏幕高度比例裁剪，不依赖固定分辨率；避免对整张游戏画面做无用 OCR。
 """
 from __future__ import annotations
 
@@ -34,13 +34,11 @@ def parse_coin(text: str) -> int | None:
 
 
 def read_coins(screen: np.ndarray) -> int | None:
-    """OCR 整屏，取顶部状态栏最右侧可解析为金币的数字，识别失败返回 None。"""
+    """OCR 顶部栏，取最右侧可解析为金币的数字，识别失败返回 None。"""
     h = screen.shape[0]
     y1, y2 = int(h * COIN_BAR_TOP), int(h * COIN_BAR_BOTTOM)
     candidates = []
-    for text, x, y, _ in ocr_fullscreen(screen):
-        if not (y1 <= y <= y2):
-            continue
+    for text, x, _y, _ in ocr_fullscreen(screen[y1:y2, :]):
         coins = parse_coin(text)
         if coins is not None:
             candidates.append((x, coins))

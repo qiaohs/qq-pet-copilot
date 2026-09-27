@@ -162,9 +162,10 @@ class VisitScenario(DeviceScenario):
         new = [desc for desc, _, _ in visible if desc and desc not in self._friends]
         for desc in new:
             self._friends.append(desc)
-        log(f'累积好友名单({len(self._friends)}): '
-            + (', '.join(self._friends) or '无')
-            + (f'（新增: {", ".join(new)}）' if new else ''))
+        # 好友多时完整累积名单会在每次切换时成倍刷屏。只打印本轮首次出现的
+        # 名字；已打印过的名字不再重复，累计数量仍保留用于观察遍历进度。
+        if new:
+            log(f'新增好友({len(new)}，累计 {len(self._friends)}): ' + ', '.join(new))
         self._friend_index += 1
         if self._friend_index >= len(self._friends):
             return False

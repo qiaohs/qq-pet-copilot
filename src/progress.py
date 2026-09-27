@@ -17,10 +17,12 @@ from .config import PROJECT_ROOT
 SCHOOL_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'school_progress.json'
 WORK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'work_progress.json'
 ADVENTURE_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'adventure_progress.json'
+ADVENTURE_RECALL_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'adventure_recall_progress.json'
 EMPLOYED_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'employed_progress.json'
 VISIT_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'visit_progress.json'
 PK_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'pk_progress.json'
 HIRE_FRIEND_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'hire_friend_progress.json'
+HIRE_FRIEND_FAILURE_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'hire_friend_failure_progress.json'
 EXP_DAILY_PROGRESS_FILE = PROJECT_ROOT / 'runs' / 'exp_daily_progress.json'
 
 
@@ -227,6 +229,27 @@ def _migrate_old_durations(progress_file: Path, key: str, minutes_per: int) -> N
         f' = {count * minutes_per} 分钟')
 
 
+def _ensure_work_duration_floor() -> None:
+    """修补打工次数已计入、时长却因旧版本/异常收尾漏记的当天数据。
+
+    每次打工最短也有 10 分钟，因此只在 ``打工次数 x 10 分钟`` 大于当前
+    ``work_secs`` 时抬高到这个保守下限；已经按 45 分钟/2 小时正确累计的时长
+    不会被覆盖。该修补幂等，只会在确有缺口时写盘并记录一次日志。
+    """
+    data = progress_store.read_raw(WORK_PROGRESS_FILE)
+    if data.get('date') != date.today().isoformat():
+        return
+    count = progress_store.to_int(data.get('learned', 0))
+    current = progress_store.to_int(data.get('work_secs', 0))
+    minimum = count * WORK_DURATION_SECONDS['10分钟']
+    if minimum <= current:
+        return
+    data['work_secs'] = minimum
+    progress_store.write_raw(WORK_PROGRESS_FILE, data)
+    log(f'修补打工时长: 今天 {count} 次至少 {minimum // 60} 分钟'
+        f'（原统计 {current // 60} 分钟）')
+
+
 def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, int]:
     """今天已累计 (学习秒, 打工秒)。
 
@@ -235,5 +258,6 @@ def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, i
     """
     _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', school_factor)
     _migrate_old_durations(WORK_PROGRESS_FILE, 'work_secs', work_factor)
+    _ensure_work_duration_floor()
     return (_today_seconds(SCHOOL_PROGRESS_FILE, 'study_secs'),
             _today_seconds(WORK_PROGRESS_FILE, 'work_secs'))

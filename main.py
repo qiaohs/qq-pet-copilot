@@ -86,7 +86,9 @@ from src.config import (
 )
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
+    ADVENTURE_RECALL_PROGRESS_FILE,
     EMPLOYED_PROGRESS_FILE,
+    HIRE_FRIEND_FAILURE_PROGRESS_FILE,
     HIRE_FRIEND_PROGRESS_FILE,
     PK_PROGRESS_FILE,
     SCHOOL_PROGRESS_FILE,
@@ -937,9 +939,9 @@ class MainWindow(MSFluentWindow):
         return card
 
     def _build_today_card(self) -> HeaderCardWidget:
-        """今日统计卡片：两行网格均匀分布（每秒从进度文件刷新）。
+        """今日统计卡片：三行网格均匀分布（每秒从进度文件刷新）。
 
-        上行：学习(h)/工作(h)/学习/打工/冒险；下行：踩踩/经验日常/PK/被雇佣。
+        展示次数、学习/打工时长，以及冒险提前召回和雇佣成功/失败次数。
         """
         card = CompactCardWidget()
         card.setTitle('今日统计')
@@ -950,7 +952,9 @@ class MainWindow(MSFluentWindow):
         self._today_values = {}
         fields = (('study_h', '学习(h)'), ('work_h', '工作(h)'),
                   ('学习', '学习'), ('打工', '打工'), ('冒险', '冒险'),
-                  ('踩踩', '踩踩'), ('经验日常', '经验日常'), ('PK', 'PK'), ('被雇佣', '被雇佣'))
+                  ('提前召回', '提前召回'), ('踩踩', '踩踩'),
+                  ('经验日常', '经验日常'), ('PK', 'PK'), ('被雇佣', '被雇佣'),
+                  ('雇佣成功', '雇佣成功'), ('雇佣失败', '雇佣失败'))
         for i, (key, label) in enumerate(fields):
             cell = QWidget()
             cell_layout = QVBoxLayout(cell)
@@ -1178,9 +1182,12 @@ class MainWindow(MSFluentWindow):
                 ('学习', SCHOOL_PROGRESS_FILE, cfg.school.times_per_day),
                 ('打工', WORK_PROGRESS_FILE, cfg.work.times_per_day),
                 ('冒险', ADVENTURE_PROGRESS_FILE, cfg.adventure.times_per_day),
+                ('提前召回', ADVENTURE_RECALL_PROGRESS_FILE, 0),
                 ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.times_per_day),
                 ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
                 ('被雇佣', EMPLOYED_PROGRESS_FILE, 0),  # 无次数上限，只显示当日次数
+                ('雇佣成功', HIRE_FRIEND_PROGRESS_FILE, cfg.hire_friend.times_per_day),
+                ('雇佣失败', HIRE_FRIEND_FAILURE_PROGRESS_FILE, 0),
             ]
             study_s, work_s = load_durations(
                 cfg.schedule.school_factor, cfg.schedule.work_factor)

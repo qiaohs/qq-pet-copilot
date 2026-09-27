@@ -26,7 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.ocr import find_text, ocr_fullscreen, ocr_texts
 from src.progress import (
     ADVENTURE_PROGRESS_FILE,
+    ADVENTURE_RECALL_PROGRESS_FILE,
     count_cross,
+    increment_progress,
     load_progress,
     log,
     log_history,
@@ -142,6 +144,8 @@ class AdventureScenario(DeviceScenario):
         self._ensure_adventure_type()
         self.click_until_gone_or_see('adventure_start', 'adventure_in', '开始冒险')
         if self.skip_bad_weather and self.recall_bad_weather():
+            recalled = increment_progress(ADVENTURE_RECALL_PROGRESS_FILE)
+            log(f'已计入提前召回次数（今天 {recalled} 次）')
             if self.defer_wait:
                 # 召回即同步完成：立即计数（计数统一走 count_cross，
                 # 由 run() 刷新本地计数判断上限）
