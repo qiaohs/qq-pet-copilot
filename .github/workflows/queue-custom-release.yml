@@ -13,16 +13,14 @@ jobs:
     if: github.repository == 'qiaohs/qq-pet-copilot'
     runs-on: ubuntu-latest
     steps:
-      - name: Create one-time release tag
+      - name: Dispatch one-time release build
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: v0.7.1-custom.2
         run: |
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Tag $RELEASE_TAG already exists; nothing to do."
-            exit 0
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
-            -f ref="refs/tags/$RELEASE_TAG" \
-            -f sha="$GITHUB_SHA"
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f tag="$RELEASE_TAG" \
+            -f ref="$GITHUB_SHA"
