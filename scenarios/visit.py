@@ -49,6 +49,7 @@ from scenarios.care import ONE_CLICK_PAY_RETRIES
 
 FRIEND_ITEM_XPATH = LOCATORS['visit_friend_item']['xpath'][0]
 STEP_RETRIES = 5  # 切换好友后踩踩按钮有几秒加载延迟，重试次数
+FRIEND_LIST_RETRIES = 5  # 好友页左侧列表可能晚于踩踩按钮出现
 
 PROGRESS_FILE = VISIT_PROGRESS_FILE
 
@@ -74,6 +75,15 @@ class VisitScenario(DeviceScenario):
             self._goto_first_friend_emulator()
             return
         self.click_until_gone_or_see('visit_friends', 'visit', '打开好友列表')
+        # 进入第一个好友前先缓存可见名单。旧逻辑到好友页后才第一次抓名单，
+        # 左侧列表若尚未渲染就会把空列表误判成“没有更多好友”。
+        visible = self._wait_friend_items()
+        for desc, _, _ in visible:
+            if desc and desc not in self._friends:
+                self._friends.append(desc)
+        if self._friends:
+            log(f'进入好友页前缓存好友名单({len(self._friends)}): '
+                + ', '.join(self._friends))
         # 不额外等固定 1 秒：点访问靠 click_until_gone_or_see 重试（点不中下一轮再点）
         self.click_until_gone_or_see('visit', 'visit_step', '访问好友')
 
@@ -87,7 +97,7 @@ class VisitScenario(DeviceScenario):
             opener.am_start_pet_page(adb, serial, entry['uin'], entry['attrs'])
             # 等好友页渲染（踩踩/已踩 按钮出现）。好友页 chrome（按钮/好友列表）
             # 首次加载偏慢（实测可能 >10 秒），等待轮数给足 NAV_TIMEOUT*2
-            for _ in range(NAV_TIMEOUT * 2):
+            for _ in range(self.wait_attempts(NAV_TIMEOUT * 2)):
                 source = self.dev.hierarchy()
                 if (self.see('visit_step', source=source)
                         or self.see('visit_stepped', source=source)):
@@ -100,7 +110,8 @@ class VisitScenario(DeviceScenario):
     def step_once(self) -> str:
         """点一次踩踩，返回 'stepped'；检测到已踩标志（今天踩过该好友）
         返回 'already' 由调用方跳过切换下一个（切换好友后按钮有加载延迟，重试几次）。"""
-        for attempt in range(1, STEP_RETRIES + 1):
+        attempts = self.wait_attempts(STEP_RETRIES)
+        for attempt in range(1, attempts + 1):
             source = self.dev.hierarchy()
             if self.see('visit_stepped', source=source):
                 return 'already'
@@ -109,7 +120,7 @@ class VisitScenario(DeviceScenario):
                 self.click(hit[0], hit[1])
                 time.sleep(CLICK_INTERVAL)
                 return 'stepped'
-            log(f'未找到踩踩按钮，等待重试 ({attempt}/{STEP_RETRIES})')
+            log(f'未找到踩踩按钮，等待重试 ({attempt}/{attempts})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('好友页未找到踩踩按钮')
 
@@ -125,6 +136,20 @@ class VisitScenario(DeviceScenario):
         log('当前可见好友: ' + (', '.join(f'{d}@({x},{y})' for d, x, y in items) or '无'))
         return items
 
+    def _wait_friend_items(self, *, required: bool = False) -> list[tuple[str, int, int]]:
+        """等待好友列表渲染；required 时连续为空按异常重试，而非判定列表结束。"""
+        attempts = self.wait_attempts(FRIEND_LIST_RETRIES)
+        for attempt in range(1, attempts + 1):
+            items = self._friend_items()
+            if items:
+                return items
+            if attempt < attempts:
+                log(f'好友列表尚未加载，等待重试 ({attempt}/{attempts})')
+                time.sleep(CLICK_INTERVAL)
+        if required:
+            raise RuntimeError('好友列表连续多次为空，无法判断是否还有好友')
+        return []
+
     def next_friend(self) -> bool:
         """切换到下一个好友：按累积名单顺序点下一个。
 
@@ -133,7 +158,7 @@ class VisitScenario(DeviceScenario):
         基于累积名单；点击目标从当前可见项里按 content-desc 找，
         找不到（还没滚出来）视为没有更多好友。
         """
-        visible = self._friend_items()
+        visible = self._wait_friend_items(required=True)
         new = [desc for desc, _, _ in visible if desc and desc not in self._friends]
         for desc in new:
             self._friends.append(desc)

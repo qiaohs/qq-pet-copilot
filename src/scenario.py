@@ -1,6 +1,7 @@
 """场景基类：设备连接、截图、u2/OCR 定位点击、通用导航。"""
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -81,6 +82,19 @@ class DeviceScenario:
         配置 schedule.check_interval。"""
         return float(self.cfg.schedule.check_interval)
 
+    @property
+    def ui_wait_multiplier(self) -> int:
+        """慢速设备等待倍率（1-5）；兼容没有该字段的旧配置对象。"""
+        value = getattr(self.cfg.schedule, 'ui_wait_multiplier', 1)
+        try:
+            return max(1, min(5, int(value)))
+        except (TypeError, ValueError):
+            return 1
+
+    def wait_attempts(self, base: int) -> int:
+        """按慢速设备倍率放宽重试窗口，成功路径不会额外等待。"""
+        return max(1, int(base)) * self.ui_wait_multiplier
+
     def see(self, name: str, screen=None, source=None):
         """当前屏幕是否能看到名为 name 的元素，返回 (x, y, score) 或 None。
 
@@ -127,6 +141,7 @@ class DeviceScenario:
         """
         wait_ocr_only = not any(LOCATORS.get(wait_name, {}).get(k)
                                 for k in ('xpath', 'xpath_ocr', 'u2'))
+        max_attempts = self.wait_attempts(max_attempts)
         clicked = False
         for attempt in range(1, max_attempts + 1):
             # 只抓控件树快照，截图按需懒加载（see 内部 OCR 需要时才截）
@@ -199,7 +214,7 @@ class DeviceScenario:
         返回的 source 可直接给同一个页面上的后续 XPath 定位复用。
         """
         checks = max(1, int(getattr(self.cfg.schedule, 'main_page_checks', 1) or 1))
-        max_attempts = MAIN_PAGE_ATTEMPTS * checks
+        max_attempts = self.wait_attempts(MAIN_PAGE_ATTEMPTS * checks)
         misses = 0
         for attempt in range(1, max_attempts + 1):
             screen, source = self.snapshot()
@@ -262,7 +277,8 @@ class DeviceScenario:
         """
         first = third = None
         source = None
-        for attempt in range(1, 4):
+        attempts = self.wait_attempts(3)
+        for attempt in range(1, attempts + 1):
             # select_box_N 由容器 bounds 推导：容器 cache 后秒回，
             # 未缓存时第一个 see 会 dump 一次并把容器 bounds 缓存，后续秒回
             first = self.see('select_box_1', source=source)
@@ -271,8 +287,8 @@ class DeviceScenario:
                 break
             if source is None:
                 source = self.dev.hierarchy()  # 容器未命中：抓一次快照供推导
-            if attempt == 1 or attempt == 3:
-                log(f'未定位到选择框，等待加载 ({attempt}/3)')
+            if attempt == 1 or attempt == attempts:
+                log(f'未定位到选择框，等待加载 ({attempt}/{attempts})')
             time.sleep(CLICK_INTERVAL)
         if not (first and third):
             raise RuntimeError('未定位到选择框，无法归位')
@@ -288,12 +304,13 @@ class DeviceScenario:
         点完检测一次 main_sign（金币胶囊，只有主页面有）：仍识别到 = 还在主页面 =
         点击失败/没生效，重试点击；最多 LEAVE_HOME_ATTEMPTS 次仍失败抛异常，
         由调用方走回主页面重试/恢复链路。"""
-        for attempt in range(1, LEAVE_HOME_ATTEMPTS + 1):
+        attempts = self.wait_attempts(LEAVE_HOME_ATTEMPTS)
+        for attempt in range(1, attempts + 1):
             hit = self.see('leave_home')
             if hit:
                 self.click(hit[0], hit[1])
             else:
-                log(f'未定位到"出门"按钮（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
+                log(f'未定位到"出门"按钮（{attempt}/{attempts}）')
             time.sleep(CLICK_INTERVAL)
             # 出门成功 = 主页面标志消失；还在主页面说明没点中/没生效
             if not self.see('main_sign'):
@@ -302,8 +319,8 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
             if not self.see('main_sign'):
                 return
-            log(f'点击出门后仍在主页面，重试点击出门（{attempt}/{LEAVE_HOME_ATTEMPTS}）')
-        raise RuntimeError(f'点击出门 {LEAVE_HOME_ATTEMPTS} 次后仍停留在主页面')
+            log(f'点击出门后仍在主页面，重试点击出门（{attempt}/{attempts}）')
+        raise RuntimeError(f'点击出门 {attempts} 次后仍停留在主页面')
 
     def wait_end(self, in_name: str, end_name: str, check_interval: float | None = None,
                  encourage: bool = False) -> None:
@@ -655,12 +672,14 @@ class DeviceScenario:
         if any('教师评语' in t for t in texts):
             return 'school'
         if any('打工总结' in t for t in texts):
-            hf_name = getattr(getattr(self.cfg, 'hire_friend', None), 'friend_name', '') or ''
-            hf_name = hf_name.strip()
-            if hf_name and any(hf_name in t for t in texts):
-                # 打工总结含雇佣好友名称：同时计一次雇佣好友（打工次数由调用方计）
+            hf_names = (name.strip() for name in re.split(
+                r'[,，]', getattr(getattr(self.cfg, 'hire_friend', None), 'friend_name', '') or ''))
+            matched = next((name for name in hf_names
+                            if name and any(name in t for t in texts)), None)
+            if matched:
+                # 打工总结含任一候选好友名称：同时计一次雇佣好友
                 n = increment_progress(HIRE_FRIEND_PROGRESS_FILE)
-                log(f'打工总结含雇佣好友 {hf_name}，已计入雇佣好友次数（{n} 次）')
+                log(f'打工总结含雇佣好友 {matched}，已计入雇佣好友次数（{n} 次）')
             return 'work'
         if self.see('adventure_end', screen, source):
             return 'adventure'

@@ -129,6 +129,8 @@ class ScheduleConfig:
     # 主页面检测次数：连续这么多次识别不到主页面标志（金币胶囊）才允许点 back
     # （主页面点 back 会退出游戏；默认 1 = 识别不到立即点 back，即原逻辑）
     main_page_checks: int = 1
+    # 慢速设备界面等待倍率：放宽导航/列表/按钮加载重试次数，不增加成功路径固定延迟
+    ui_wait_multiplier: int = 1
     # 返回方式：系统返回（Android 返回键，默认）/ 返回图标（定位游戏内 back 按钮点击）
     back_method: str = "系统返回"
 
@@ -292,6 +294,8 @@ class GuiConfig:
     theme: str = "跟随系统"
     # 画面镜像开关（主页工具栏，开关状态持久化；仅 GUI 用）
     mirror: bool = True
+    # 日志框保留的最近行数；完整日志仍写入 runs/logs/ 当日日志文件
+    log_max_lines: int = 500
 
 
 @dataclass

@@ -13,6 +13,8 @@ gui:
   theme: 跟随系统
   # 画面镜像开关（主页工具栏开关状态持久化）
   mirror: true
+  # 日志框保留最近多少行（完整日志仍在 runs/logs/ 当日日志文件中）
+  log_max_lines: 500
 
 # 控制方案：injectInputEvent（默认，uiautomator2 d.touch，走 u2 server 事件注入）/
 # minitouch（openstf minitouch socket 本地直发触摸事件，模拟器上 d.click 不可靠时更稳）
@@ -69,6 +71,8 @@ schedule:
   # 主页面检测次数：连续这么多次识别不到主页面标志（金币胶囊）才允许点 back
   # （主页面点 back 会退出游戏；默认 1 = 识别不到立即点 back，即原逻辑）
   main_page_checks: 1
+  # 慢速设备等待倍率：1 正常；老手机建议 2。只放宽加载重试窗口，不拖慢成功步骤
+  ui_wait_multiplier: 1
   # 返回方式：系统返回（Android 返回键）/ 返回图标（定位游戏内 back 按钮点击）
   back_method: 系统返回
 adventure:
@@ -114,8 +118,8 @@ friend_care:
   # 好友护理时间段（HH:MM-HH:MM）：到达开始时间后访问指定好友家护理，
   # 到结束时间退出场景；支持跨零点（如 22:00-02:00）
   time_range: "14:00-19:30"
-  # 护理好友名称（好友列表 content-desc "好友 xxx" 里匹配，支持部分匹配）
-  friend_name: ""
+  # 护理好友名称（支持部分匹配；多个好友用逗号分隔，名称请保持唯一）
+  friend_name: ""  # 例如：张三,李四,王五
   # 护理好友方式：ocr检测（读好友状态面板，体力/清洁护理到 90）/
   # 一键护理（点好友页的一键护理按钮）
   method: ocr检测
@@ -130,7 +134,7 @@ hire_friend:
   # 雇佣好友调度间隔（秒）：距上次调度至少间隔这么久才再次调度（收尾后快速接下一轮）
   interval_seconds: 5
   # 雇佣好友名称（好友列表 content-desc "好友 xxx" 里匹配，支持部分匹配）
-  friend_name: ""
+  friend_name: ""  # 多个好友可用逗号分隔，例如：张三,李四,王五
   # 每天雇佣好友次数，0 为不雇佣；进度按天持久化
   times_per_day: 8
 

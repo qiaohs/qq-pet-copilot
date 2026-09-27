@@ -114,7 +114,6 @@ SCRCPY = resource_path('resources/scrcpy-win64') / 'scrcpy.exe'
 SCRCPY_TITLE_PREFIX = 'QQPetCopilotScrcpy'
 RUNNER_SCRIPT = PROJECT_ROOT / 'scenarios' / 'runner.py'
 EMBED_TRIES = 40  # 查找 scrcpy 窗口的次数（每次 500ms）
-LOG_MAX_LINES = 5000  # 日志区显示行数上限（超出自动丢弃最旧的行；完整日志在 runs/logs/ 文件里）
 SCRCPY_WATCHDOG_MS = 5000    # scrcpy 看门狗轮询间隔（毫秒）
 SCRCPY_RETRY_INTERVAL = 15.0  # 重拉失败后的退避（秒；设备重启要几十秒，别刷日志）
 UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000  # 检查更新周期（启动后先自动查一次）
@@ -160,10 +159,14 @@ class LogView(PlainTextEdit):
     # 行内 URL 匹配：排除中文标点/引号/括号结尾（日志里链接常跟"下载：xxx。"）
     _URL_RE = re.compile(r'https?://[^\s<>"\'），。；！？）]+')
 
-    def __init__(self, readOnly: bool = False, **kwargs):
+    def __init__(self, readOnly: bool = False, *, on_bottom=None,
+                 on_clear=None, on_open_today=None, **kwargs):
         super().__init__(**kwargs)
         self.setReadOnly(readOnly)  # fluent PlainTextEdit 构造不收 readOnly 关键字
         self.setMouseTracking(True)
+        self._on_bottom = on_bottom
+        self._on_clear = on_clear
+        self._on_open_today = on_open_today
 
     def _url_at(self, pos) -> str | None:
         cursor = self.cursorForPosition(pos)
@@ -188,6 +191,28 @@ class LogView(PlainTextEdit):
         self.viewport().setCursor(
             Qt.CursorShape.PointingHandCursor if url else Qt.CursorShape.IBeamCursor)
         super().mouseMoveEvent(event)
+
+    def contextMenuEvent(self, event):
+        """保留复制/全选等系统菜单，并追加日志专用操作。"""
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
+        bottom_action = menu.addAction('回到底部')
+        clear_action = menu.addAction('清屏（仅界面）')
+        open_action = menu.addAction('打开今日日志文件')
+        if self._on_bottom:
+            bottom_action.triggered.connect(self._on_bottom)
+        else:
+            bottom_action.setEnabled(False)
+        if self._on_clear:
+            clear_action.triggered.connect(self._on_clear)
+        else:
+            clear_action.setEnabled(False)
+        if self._on_open_today:
+            open_action.triggered.connect(self._on_open_today)
+        else:
+            open_action.setEnabled(False)
+        menu.exec(event.globalPos())
+        menu.deleteLater()
 
 
 class _NoWheelSpinBox(SpinBox):
@@ -223,6 +248,7 @@ class _NoInsertEditableComboBox(EditableComboBox):
 # 设置选项卡：连接/调度引擎/全局规则/告警等全局设置（场景任务相关的在任务选项卡）
 SETTING_FIELDS = [
     ('gui.theme', '主题', ['跟随系统', '深色', '浅色']),
+    ('gui.log_max_lines', '日志显示最近行数', 'int'),
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
     ('control.method', '控制方案', ['injectInputEvent', 'minitouch']),
@@ -235,6 +261,7 @@ SETTING_FIELDS = [
     ('schedule.coin_threshold', '金币阈值', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
     ('schedule.main_page_checks', '主页面检测次数', 'int'),
+    ('schedule.ui_wait_multiplier', '慢速设备等待倍率（1-5）', 'int'),
     ('schedule.back_method', '返回方式', ['系统返回', '返回图标']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('recover.emulator_restart_cmd', '模拟器重启命令（留空自动探测）', 'str'),
@@ -271,13 +298,13 @@ TASK_SETTING_FIELDS = [
     ('pk.start_time', 'PK 调度时间', 'str'),
     ('friend_care.enabled', '启用好友护理', 'bool'),
     ('friend_care.time_range', '好友护理时间段', 'str'),
-    ('friend_care.friend_name', '护理好友名称', 'str'),
+    ('friend_care.friend_name', '护理好友名称（逗号分隔多个）', 'str'),
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
     ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
     ('hire_friend.enabled', '雇佣好友开关', 'bool'),
     ('hire_friend.time_range', '雇佣好友时间段', 'str'),
     ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
-    ('hire_friend.friend_name', '雇佣好友名称', 'str'),
+    ('hire_friend.friend_name', '雇佣好友名称（逗号分隔多个）', 'str'),
     ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
     ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('care.energy_threshold', '体力阈值', 'int'),
@@ -655,8 +682,13 @@ class MainWindow(MSFluentWindow):
         self.setMinimumSize(1100, 700)
 
         self.scrcpy_view = ScrcpyContainer()
-        self.log_view = LogView(readOnly=True)
-        self.log_view.setMaximumBlockCount(LOG_MAX_LINES)
+        self.log_view = LogView(
+            readOnly=True,
+            on_bottom=self._scroll_logs_to_bottom,
+            on_clear=self._clear_log_view,
+            on_open_today=self._open_today_log,
+        )
+        self.log_view.setMaximumBlockCount(max(50, load_config().gui.log_max_lines))
 
         # 设置/任务页的表单控件注册表（加载/保存共用，见 _build_settings_form）
         self._setting_widgets: dict = {}
@@ -935,10 +967,9 @@ class MainWindow(MSFluentWindow):
         return card
 
     def _build_log_card(self) -> HeaderCardWidget:
-        """主页日志卡片：调度器与本进程日志实时显示（链接可点击），吃掉右侧剩余空间。"""
+        """主页日志卡片：链接可点击；右键可回底部、清屏或打开当日日志。"""
         card = CompactCardWidget()
         card.setTitle('日志')
-        # viewLayout 是 QHBoxLayout，日志撑满
         card.viewLayout.addWidget(self.log_view, 1)
         return card
 
@@ -1586,7 +1617,10 @@ class MainWindow(MSFluentWindow):
         if kind == 'int':
             w = _NoWheelSpinBox()
             # 体力/清洁是 0-100，其余次数/阈值放宽
-            w.setRange(0, 100 if key.startswith('care.') else 99999)
+            if key == 'schedule.ui_wait_multiplier':
+                w.setRange(1, 5)
+            else:
+                w.setRange(0, 100 if key.startswith('care.') else 99999)
             # 用 valueChanged 而非 editingFinished：滚轮/滚动导致的失焦不再误触发保存，
             # 只有数值真的变化（箭头/键盘/输入提交）才保存；_load_settings 用 blockSignals 防误存
             w.valueChanged.connect(lambda _v, k=key: self.save_field(k))
@@ -2163,6 +2197,8 @@ class MainWindow(MSFluentWindow):
         if key == 'gui.theme':
             # 主题即时切换（qfluentwidgets 支持运行时 setTheme），无需重启
             setTheme(THEME_MAP.get(str(fixed), Theme.AUTO))
+        elif key == 'gui.log_max_lines':
+            self.log_view.setMaximumBlockCount(int(fixed))
         if key in ('adb.device_serial', 'adb.path'):
             # adb 连接相关：重拉 scrcpy，调度器也需要重启重建连接
             if key == 'adb.device_serial' and self.emulator_mode:
@@ -2311,6 +2347,30 @@ class MainWindow(MSFluentWindow):
         log('调度器已结束')
 
     # ---- 日志刷新 ----
+
+    def _scroll_logs_to_bottom(self) -> None:
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _clear_log_view(self) -> None:
+        """只清空界面和待显示的旧消息；磁盘日志及后续新消息保留。"""
+        while True:
+            try:
+                self._log_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.log_view.clear()
+
+    def _open_today_log(self) -> None:
+        """打开 runs/logs/ 下的当日日志；尚无日志时先创建空文件。"""
+        path = PROJECT_ROOT / 'runs' / 'logs' / f'{datetime.now():%Y-%m-%d}.log'
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+                log(f'无法打开今日日志文件: {path}')
+        except OSError as e:
+            log(f'打开今日日志文件失败: {e}')
 
     def _drain_logs(self) -> None:
         bar = self.log_view.verticalScrollBar()

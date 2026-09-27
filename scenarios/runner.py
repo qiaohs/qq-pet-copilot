@@ -1459,18 +1459,29 @@ class TaskQueueRunner(Runner):
     def _sleep_until_next(self, tasks: dict, order: list) -> bool:
         """没有任务可执行时的等待：睡到最近的等待点（退避/每日窗口/pending 收尾时间），
         上限 QUEUE_POLL_INTERVAL 短轮询（顺带热加载配置）。
-        主任务当天结束后只等支线任务的失败退避，没有则返回 False（正常结束）。"""
+        主任务当天结束后仍等待支线任务的失败退避或下一个每日时间点；
+        没有任何未来等待点才返回 False（正常结束）。"""
         now = datetime.now()
         if self._main_finished(tasks):
-            future = [task.next_at for key in order if key in SIDE_TASK_KEYS
-                      for task in (tasks[key],)
-                      if task.cfg.enabled and not task.dead and task.next_at > now]
+            future = []
+            for key in order:
+                if key not in SIDE_TASK_KEYS:
+                    continue
+                task = tasks[key]
+                if not task.cfg.enabled:
+                    continue
+                if not task.dead and task.next_at > now:
+                    future.append(task.next_at)
+                if task.cfg.trigger == 'daily':
+                    nxt = self._next_daily_time(task.cfg.daily_times, now)
+                    if nxt:
+                        future.append(nxt)
             if not future:
                 log('冒险/学习/打工/雇佣好友都已达当天上限，结束')
                 return False
             at = min(future)
             log(f'主任务组当天已结束，还有支线任务等待到 {at:%H:%M}，调度器等待')
-            time.sleep(max(1.0, (at - now).total_seconds()))
+            time.sleep(min(max(1.0, (at - now).total_seconds()), QUEUE_POLL_INTERVAL))
             return True
         future = []
         for key in order:

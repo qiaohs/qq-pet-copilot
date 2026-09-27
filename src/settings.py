@@ -21,6 +21,7 @@ DEFAULTS = {
     'adb.device_serial': '',
     'gui.theme': '跟随系统',
     'gui.mirror': True,
+    'gui.log_max_lines': 500,
     'control.method': 'injectInputEvent',
     'emulator.type': 'auto',
     'emulator.name': '',
@@ -35,6 +36,7 @@ DEFAULTS = {
     'schedule.daily_hour_limit': 8,
     'schedule.check_interval': 8,
     'schedule.main_page_checks': 1,
+    'schedule.ui_wait_multiplier': 1,
     'schedule.back_method': '系统返回',
     'schedule.encourage_times': 10,
     'adventure.times_per_day': 1,
@@ -114,6 +116,11 @@ def validate_field(key: str, value):
         return (True, value) if value in ('injectInputEvent', 'minitouch') else (False, default)
     if key == 'gui.theme':
         return (True, value) if value in ('跟随系统', '深色', '浅色') else (False, default)
+    if key == 'gui.log_max_lines':
+        try:
+            return (True, int(value)) if 50 <= int(value) <= 99999 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
     if key == 'emulator.type':
         from .emulator import EMULATOR_TYPES
         return (True, value) if value in ('auto', *EMULATOR_TYPES) else (False, default)
@@ -144,6 +151,11 @@ def validate_field(key: str, value):
         # 检查间隔至少 1 秒 / 检测次数至少 1 次（0 会变成无间隔死循环或不设防点 back）
         try:
             return (True, value) if int(value) >= 1 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key == 'schedule.ui_wait_multiplier':
+        try:
+            return (True, int(value)) if 1 <= int(value) <= 5 else (False, default)
         except (TypeError, ValueError):
             return False, default
     if key in ('employed.interval_seconds', 'hire_friend.interval_seconds',
