@@ -25,7 +25,8 @@
 - 金币 < 阈值 -> 先打工（每次打工一轮后重新判断），赚够了自然切换去学习
 - 金币识别失败 -> 默认先打工
 - 首选场景当天已达上限 -> 换另一个；都达上限则结束
-- 踩踩/PK：到达各自 start_time 且当天次数未满时，在主页面处理；
+- 踩踩/PK：到达各自 start_time 且当天次数未满时，在主页面处理；踩踩进入后
+  连续运行到 continuous_target，若中途退出且已达 exit_complete_count 则今日完成；
   PK 每轮最多 16 局（超出下一轮接着跑），开始前检查体力/清洁
   （每局各耗 5，不足则喂食/洗澡到 90）
 - 好友护理：friend_care.enabled 开启且配置了好友名称时，在 friend_care.time_range
@@ -92,7 +93,6 @@ from src.progress import (
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
-    exp_daily_done,
     load_durations,
     load_progress,
     log,
@@ -110,7 +110,7 @@ from scenarios.friend_care import FriendCareScenario, in_time_range, parse_time_
 from scenarios.hire_friend import FriendHireScenario
 from scenarios.pk import PKDeferred, PKScenario
 from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
-from scenarios.visit import VisitScenario
+from scenarios.visit import VisitScenario, visit_finished_after_exit
 from scenarios.work import DURATION_BOXES, WorkScenario
 
 # 连续异常恢复（adb reboot）次数上限，超过认为设备/环境有硬故障，放弃
@@ -216,12 +216,14 @@ class Runner:
             f'（学习按学园 10/20/150/45 分钟、打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
-        self.visit_times = visit.times_per_day
+        self.visit_times = int(visit.continuous_target)
+        self.visit_exit_complete_count = int(visit.exit_complete_count)
         self.visit_start = parse_hhmm(visit.start_time, 'visit.start_time')
         pk = self.school.cfg.pk
         self.pk_times = pk.times_per_day
         self.pk_start = parse_hhmm(pk.start_time, 'pk.start_time')
-        log(f'踩踩: 每天 {self.visit_times} 次 @ {self.visit_start.strftime("%H:%M")}'
+        log(f'踩踩: 连续目标 {self.visit_times} 次，退出后 {self.visit_exit_complete_count} 次完成 '
+            f'@ {self.visit_start.strftime("%H:%M")}'
             f'，PK: 每天 {self.pk_times} 次 @ {self.pk_start.strftime("%H:%M")}')
 
     def _deferred(self, name: str) -> bool:
@@ -238,12 +240,12 @@ class Runner:
         return datetime.now().time() >= self.adventure_start
 
     def visit_due(self) -> bool:
-        """是否该踩踩了：已到调度时间、当天次数未满且不在失败延后期；
-        或踩满但经验日常未完成（需继续遍历好友做经验照顾）。"""
+        """是否该踩踩：退出后只要达到提前完成阈值，就不再重载前序好友。"""
         if not self.visit_times or self._deferred('踩踩'):
             return False
         _, done, _ = load_progress(VISIT_PROGRESS_FILE, quiet=True)
-        if done >= self.visit_times and exp_daily_done():
+        if visit_finished_after_exit(
+                done, self.visit_times, self.visit_exit_complete_count):
             return False
         return datetime.now().time() >= self.visit_start
 
@@ -578,8 +580,11 @@ class Runner:
         self.hire_friend.cfg.work = cfg.work
         self.work.times_per_day = cfg.work.times_per_day
         self.work.employ_scroll_limit = cfg.work.employ_scroll_limit
-        self.visit.times_per_day = cfg.visit.times_per_day
-        self.visit_times = cfg.visit.times_per_day
+        self.visit.continuous_target = int(cfg.visit.continuous_target)
+        self.visit.exit_complete_count = int(cfg.visit.exit_complete_count)
+        self.visit_times = self.visit.continuous_target
+        self.visit_exit_complete_count = self.visit.exit_complete_count
+        self.visit.cfg.visit = cfg.visit
         try:
             self.visit_start = parse_hhmm(cfg.visit.start_time, 'visit.start_time')
         except ValueError as e:

@@ -44,7 +44,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | --- | --- |
 | `main.py` | PyQt6 GUI，**界面基于 PyQt6-Fluent-Widgets**（requirements 已加 `PyQt6-Fluent-Widgets>=1.11,<2`，不要装 [full] 扩展会拉 scipy）：`MSFluentWindow` + 左侧导航栏（主页/调度/统计/任务/设置；设置页固定导航底部；主题按 `gui.theme` 配置（跟随系统/深色/浅色，`THEME_MAP`），启动时 `setTheme`、设置页改动即时生效）。**顶部全局工具栏**（`_install_toolbar` 把 stackedWidget 包进右侧容器：上工具栏下页面，切页不受影响）：开始 PrimaryPushButton、停止、画面镜像 SwitchButton（开关状态持久化 `gui.mirror`，`_toggle_scrcpy` 里写回，启动时 `load_config().gui.mirror` 恢复）、连接测试、手动重启 + 右侧运行时间 label。主页 = 左侧 scrcpy 画面卡片（SetParent 嵌入，**9:16 竖屏**：`ScrcpyContainer` 报竖屏 sizeHint/heightForWidth，`embed` 优先取 scrcpy 窗口客户区真实尺寸做嵌入比例（自适应任何设备/--max-size，用设备物理分辨率比例会留两侧黑边），`_aspect` 未知按 (9,16) 兜底 `_fit`，画面卡宽度随高度自适应收拢（`_fit_screen_card`：fixed width = 高度×画面比例，嵌入后/窗口缩放重算；**不用 QSplitter**——把手在深色主题下渲染成白色竖条；容器未嵌入时透明背景跟随主题，不写死黑色）+ 右侧卡片列（宠物状态横排一行/任务队列卡/今日统计（三行网格：学习(h)/工作(h) 时长拆分 + 各任务当日次数 + 提前召回/雇佣成功/雇佣失败）/日志卡——三张卡内容都按列等宽均分（单元格 addWidget(cell, 1)，不要挤在左侧）——`log_view` 在主页吃剩余空间，状态/队列/今日卡垂直 sizePolicy Maximum 紧贴内容；**任务队列卡**（当前任务/下一任务/待执行/等待中）调度器运行时读 `runs/queue_status.json`、未运行按配置推算（`_predict_queue_summary` 复用调度页 `_predict_next`，按 `tasks.order` 顺序取第一个非"—"任务为下一任务）；分组卡片全用 `CompactCardWidget`（紧凑版 HeaderCardWidget：标题栏 48→34、内容边距 24→16/10/16/12，原版 chrome 占高 ~96px 一页放不了几组）；注意 `HeaderCardWidget.viewLayout` 是 QHBoxLayout，竖排内容要包一层 body widget）；调度页 = 每任务 开关（SwitchButton 开/关）/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务/设置页 = `SETTING_FIELDS`/`TASK_SETTING_FIELDS` 数据驱动表单，按配置键第一段分组进 CompactCardWidget（分组标题映射 `SETTING_GROUP_TITLES`，任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警 + 关于与更新卡片），**分组卡片两列排布**（`TwoColumnCardsPanel`：QHBoxLayout 两个竖列、列尾 stretch 顶格，`_build_settings_form` 填完字段后 `finalize()` 按 sizeHint 高度把卡片平衡进较矮列，等宽；别用 FlowLayout——行高=该行最高卡片会在同列卡片间留白）；切页加载配置按页面 objectName 判定（`_on_tab_changed`，不依赖页序）；表单控件全用 fluent 类（SwitchButton 信号是 `checkedChanged` 不是 stateChanged；devices 下拉用 `_NoInsertEditableComboBox`——EditableComboBox 回车默认把输入追加进下拉，已改写拦截；**fluent ComboBox.addItem 签名是 (text, icon=None, userData=None)，userData 必须关键字传**（位置传参被当 icon、data 全 None，设备序列号下拉曾因此选啥都存成空）；HyperlinkLabel 的 (url, text) 重载要求 url 传 QUrl，传 str 会被当成 (text, parent) 重载（显示原始 URL、点击无效）；非 editable 的 fluent ComboBox **不是** QComboBox 子类但同名 API 基本兼容）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、"手动重启"按钮
 （按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；设置页"检查更新"按钮 + 启动自动检查一次/每 6 小时一次（`src/update_checker.py`，
-有更新时设置页显示 Release 链接并打日志）；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
+有更新时设置页显示 Release 链接并打日志）；画面卡右上角提供缩放和截图按钮，截图异步保存手机原始画面到 `runs/screenshots/`，不受 GUI 缩放影响；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history）；坐标轴文字/网格颜色跟随 Fluent 明暗主题（`_text_color()`/`_grid_color()` 读 `isDarkTheme()`，自绘不吃样式表） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
@@ -161,7 +161,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   - 场景 `__init__` 里从 `self.cfg.xxx` 拷成 `self.xxx` 的**副本属性**必须逐字段同步
     （如 `work.duration`、`care.energy_threshold/clean_threshold/method`、
     `school.attribute/times_per_day`、`adventure.times_per_day/skip_bad_weather/batch/adv_type`、
-    `visit/pk.times_per_day`）；
+    `visit.continuous_target/exit_complete_count`、`pk.times_per_day`）；
   - 运行时直接读 `scen.cfg.xxx` 的字段也要同步对应场景的 cfg（如 `care_due()` 读
     `care.cfg.care.interval_seconds`、`hire_friend._select_job()` 读
     `hire_friend.cfg.work.duration`）；
@@ -220,8 +220,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   场景本地计数在 defer 分支一律跳过，防重复计数；`pending['until']` 也算等待点；
   主任务组当天结束后只等支线任务的失败退避，没有则退出调度器。
 - **踩踩/PK 调度**：执行器主循环在主页面按各自 `start_time` / 当天次数 / 失败延后期调度
-  （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；不做长等待插空
-  （好友入口只在主页面，上课/打工/冒险等待页没有）。
+  （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；踩踩进入好友页后不中途
+  让出调度，尽量连续达到 `visit.continuous_target`（默认 950）。若场景异常退出或程序重启，
+  下一次调度前持久化次数达到 `visit.exit_complete_count`（默认 200）就视为今日完成，
+  不再从第一个好友重放；该退出阈值不参与当前 `_visit_all` 循环的中途判断。
 - **护理调度**：每次护理检查（`check_and_care`，体力/清洁不足则喂食/洗澡）按
   `care.interval_seconds`（默认 60 秒，距上次检查起算，`care_due()`）节流，
   两种引擎共用（legacy 主循环每轮开头、队列引擎 care 任务）；场景上次检查时间
@@ -267,11 +269,13 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   （60 秒）复测——不原地等待（CD 可能提前结束）；好友页每轮只进入一次，按列表实际顺序
   遇到配置候选就检查，第一个可雇佣的立即使用，不要求配置名单顺序；没有 CD 才点 hire 进打工面板（面板加载固定等 3 秒，
   期间可能弹职业升级/获得新职业弹窗，先 `dismiss_career_popup()` 处理再检测，
-  未进面板重试点击），按打工流程 select_place 确认/重选打工地点（已是配置地点直接用，
+  点击后 `hire` 仍在表示页面未跳转/被雇佣已达上限，直接判当前好友不可雇佣；好友页轮播
+  可能误命中 `select_box_container`，所以不能单凭选择框判定进入成功），按打工流程 select_place 确认/重选打工地点（已是配置地点直接用，
   不是则 back 重置重选）后按 `work.duration` 选工作选择框（10分钟/45分钟/2小时 ->
   select_box_1/2/3，打工与雇佣好友共用）、点 work_start 打工一轮；打工结束点 quit
-  后才计数（雇佣成功 + 打工各计一次，不做打工流程里的雇佣部分）；候选好友未找到、
-  CD 未结束或无法进入打工面板时计入雇佣失败。雇佣分支选择工作时也必须调用
+  后才计数（雇佣成功 + 打工各计一次，不做打工流程里的雇佣部分）；单个候选 CD 未结束/
+  无法进入面板只继续下一位，不计失败；全部配置候选检查完或达到 `max_scan_count` 后仍无
+  可用好友，整轮只计一次雇佣失败。雇佣分支选择工作时也必须调用
   `set_current_work_duration()`，否则收尾会漏记打工时长。
 - **被雇佣检查调度**：`employed.enabled` 开启时，被雇佣时间段（`employed.time_range`，
   HH:MM-HH:MM 支持跨零点）内按 `employed.interval_seconds`（默认 60 秒）间隔出门

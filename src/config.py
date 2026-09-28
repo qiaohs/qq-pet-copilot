@@ -163,8 +163,12 @@ class CareConfig:
 
 @dataclass
 class VisitConfig:
-    # 每天踩踩次数，0 为不踩
-    times_per_day: int = 10
+    # 旧版每天次数字段，仅为兼容已有 config.yaml 保留；新调度使用下面两个字段
+    times_per_day: int | None = None
+    # 单次进入好友页后尽量连续踩到此数；0 为不踩
+    continuous_target: int = 950
+    # 场景退出后再次调度时，已达到此数即视为今日完成；0 表示禁用提前完成
+    exit_complete_count: int = 200
     # 踩踩调度时间（HH:MM），到达后开始处理
     start_time: str = "00:01"
 

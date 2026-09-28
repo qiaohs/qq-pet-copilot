@@ -14,14 +14,16 @@
    列表是滚动加载的，控件树里只有当前可见项，所以内部维护一份
    累积好友名单：每次抓取只把新出现的好友追加到尾部、不删除滚出
    屏幕的项，切换索引基于累积名单才不会乱；
-   重复直到踩满配置次数或没有更多好友
+   一旦进入就尽量连续运行，直到达到 continuous_target（默认 950）或没有更多好友
 5. 结束：关闭好友页面（点 back 直到 visit/visit_step 都消失）
+6. 若场景因异常、程序重启等已经退出，下次调度时进度达到
+   exit_complete_count（默认 200）就把今日踩踩视为完成，不再从第一个好友重放
 
 运行方式：
 - run()：独立运行，开头/结尾 ensure_main_page（执行器在主页面调度用）
 
 运行：python scenarios/visit.py            （Ctrl+C 停止）
-      python scenarios/visit.py --times 5 （覆盖配置的每天踩踩次数，0 为不限）
+      python scenarios/visit.py --times 5 （覆盖本次连续目标，0 为不限）
 """
 
 import os
@@ -35,7 +37,6 @@ from src.locators import LOCATORS, see_bounds
 from src.ocr import ocr_texts
 from src.progress import (
     VISIT_PROGRESS_FILE,
-    exp_daily_done,
     load_exp_daily,
     load_progress,
     log,
@@ -54,12 +55,33 @@ FRIEND_LIST_RETRIES = 5  # 好友页左侧列表可能晚于踩踩按钮出现
 PROGRESS_FILE = VISIT_PROGRESS_FILE
 
 
+def visit_finished_after_exit(done: int, continuous_target: int,
+                              exit_complete_count: int) -> bool:
+    """场景已经退出后，当前进度是否足以结束今日踩踩。
+
+    continuous_target 是本轮没中断时的完整目标；exit_complete_count 只在下一次
+    调度/重新进入前使用，0 表示禁用提前完成。当前运行中的循环不会调用本函数，
+    因而经过 200 时仍会继续踩到 950。
+    """
+    return ((continuous_target > 0 and done >= continuous_target)
+            or (exit_complete_count > 0 and done >= exit_complete_count))
+
+
 class VisitScenario(DeviceScenario):
     def __init__(self, dev=None):
         super().__init__(dev)
-        self.times_per_day = self.cfg.visit.times_per_day
+        self.continuous_target = int(self.cfg.visit.continuous_target)
+        self.exit_complete_count = int(self.cfg.visit.exit_complete_count)
+        if self.continuous_target < 0 or self.exit_complete_count < 0:
+            raise ValueError('visit.continuous_target / exit_complete_count 不能为负数')
         self._exp_handled = False  # 本轮是否处理过经验照顾（点击/判定完成）
-        log(f'每天踩踩次数: {self.times_per_day if self.times_per_day else "不限"}')
+        log(f'踩踩连续目标: {self.continuous_target if self.continuous_target else "不踩"}，'
+            f'退出后完成阈值: '
+            f'{self.exit_complete_count if self.exit_complete_count else "禁用"}')
+        legacy_target = getattr(self.cfg.visit, 'times_per_day', None)
+        if legacy_target is not None:
+            log(f'旧配置 visit.times_per_day={legacy_target} 仅保留兼容，不再参与调度；'
+                '请在任务页使用“踩踩连续运行目标”')
 
     # ---- 各阶段 ----
 
@@ -257,21 +279,29 @@ class VisitScenario(DeviceScenario):
     # ---- 入口 ----
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
-        """独立运行：回主页面后进好友面板踩满剩余次数，再回主页面。
+        """独立运行：回主页面后进好友面板连续踩满目标，再回主页面。
 
         max_rounds 参数仅为与其他场景签名一致，踩踩一次调用完成整个会话。
+        每次调用代表一次“重新进入”；若持久化进度已达到退出后完成阈值，直接
+        收尾，不再重新加载已踩好友。阈值不会中断当前正在运行的 _visit_all。
         返回本次是否踩了至少一次。
         """
         if max_times is None:
-            max_times = self.times_per_day
+            max_times = self.continuous_target
         today, done, history = load_progress(PROGRESS_FILE)
         log_history(history, today)
         log_exp_daily()  # 显示经验日常当天状态与历史
-        if max_times and done >= max_times:
-            if exp_daily_done():
-                log(f'今天已踩满 {max_times} 次且经验日常已完成，无需再踩')
-                return False
-            log(f'今天已踩满 {max_times} 次，经验日常未完成，继续处理经验日常')
+        if visit_finished_after_exit(done, max_times, self.exit_complete_count):
+            if max_times and done >= max_times:
+                log(f'今天已完成连续踩踩目标 {done}/{max_times}，无需再进入好友列表')
+            else:
+                log(f'踩踩场景此前已退出，当前 {done} 次达到退出后完成阈值 '
+                    f'{self.exit_complete_count}，今日踩踩视为完成')
+            # 异常后的 run_one 会立刻再次调用本方法，现场可能仍停在好友页；
+            # 在返回 False 前收回主页面，避免调度器把任务标完成后留在错误页面。
+            self.close()
+            self.ensure_main_page()
+            return False
         start_done = done
         self.ensure_main_page()
         done = self._visit_all(max_times, today, done, history)
@@ -286,7 +316,7 @@ if __name__ == '__main__':
 
     ap = argparse.ArgumentParser(description='踩踩场景')
     ap.add_argument('--times', type=int, default=None,
-                    help='当天踩踩次数上限，0 为不限；不指定则读 config.yaml 的 visit.times_per_day')
+                    help='本次连续踩踩目标，0 为不限；不指定则读 visit.continuous_target')
     args = ap.parse_args()
 
     try:

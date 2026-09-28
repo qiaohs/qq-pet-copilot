@@ -44,7 +44,8 @@ DEFAULTS = {
     'adventure.skip_bad_weather': False,
     'adventure.batch': 12,
     'adventure.type': '附近走走',
-    'visit.times_per_day': 10,
+    'visit.continuous_target': 950,
+    'visit.exit_complete_count': 200,
     'visit.start_time': '00:01',
     'pk.times_per_day': 15,
     'pk.start_time': '00:01',
@@ -166,6 +167,11 @@ def validate_field(key: str, value):
     if key == 'schedule.ui_wait_multiplier':
         try:
             return (True, int(value)) if 1 <= int(value) <= 5 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key in ('visit.continuous_target', 'visit.exit_complete_count'):
+        try:
+            return (True, int(value)) if 0 <= int(value) <= 99999 else (False, default)
         except (TypeError, ValueError):
             return False, default
     if key in ('employed.interval_seconds', 'hire_friend.interval_seconds',

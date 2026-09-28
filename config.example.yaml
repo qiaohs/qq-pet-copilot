@@ -101,8 +101,10 @@ care:
   interval_seconds: 60
 
 visit:
-  # 每天踩踩次数，0 为不踩；进度按天持久化
-  times_per_day: 10
+  # 单次进入好友页后尽量连续踩到此数；进度按天持久化，0 为不踩
+  continuous_target: 950
+  # 场景因优先级、异常或程序重启退出后，再次调度时达到此数即视为今日完成；0 禁用
+  exit_complete_count: 200
   # 踩踩调度时间（HH:MM）：到达后开始处理；场景等待间隙（上课/打工进行中）也会插空处理
   start_time: "00:01"
 

@@ -10,7 +10,8 @@
    （如 28:05）：有则跳过当前好友；全部不可用时抛 TaskDeferred 延后复测
 4. 点击 hire 雇佣 -> 跳转到打工面板（面板加载需要时间：点击后固定等
    HIRE_PANEL_WAIT 秒再检测，未出现则重试点击；等待期间可能弹职业升级/
-   获得新职业弹窗，先 dismiss_career_popup 处理再检测）
+   获得新职业弹窗，先 dismiss_career_popup 处理再检测；若 hire 仍在说明页面
+   未跳转/该好友被雇佣已达上限，直接换下一候选）
 5. 后面跟打工流程一样：select_place 确认/重选打工地点（当前面板已是配置地点就直接用，
    不是则 back 重置 -> OCR 找配置地点重进），归位选择框后按 work.duration 点
    对应工作选择框（10分钟/45分钟/2小时 -> select_box_1/2/3）
@@ -114,7 +115,8 @@ class FriendHireScenario(FriendCareScenario):
     def _enter_work_panel(self) -> None:
         """点 hire 进打工面板：面板加载需要时间，点击后固定等 HIRE_PANEL_WAIT 秒
         再检测选择框是否出现；等待期间可能弹职业升级/获得新职业弹窗（挡住面板），
-        先处理弹窗再检测；未出现重试点击，多次失败尝试下一候选好友。"""
+        先处理弹窗再检测；hire 仍在表示页面未跳转，直接尝试下一候选好友；
+        hire 已消失但面板尚未出现时才重试检测/点击。"""
         attempts = self.wait_attempts(HIRE_PANEL_ATTEMPTS)
         panel_checks = self.wait_attempts(HIRE_PANEL_CHECKS)
         for attempt in range(1, attempts + 1):
@@ -125,14 +127,27 @@ class FriendHireScenario(FriendCareScenario):
                 raise FriendUnavailable('好友家未找到 hire 雇佣按钮')
             log(f'点击 hire，等待 {HIRE_PANEL_WAIT:.0f} 秒让打工面板加载')
             time.sleep(HIRE_PANEL_WAIT)
+            still_on_friend_page = False
             for _check in range(panel_checks):
                 # 职业升级/获得新职业弹窗会挡住打工面板：处理后继续检测
                 if self.dismiss_career_popup():
                     time.sleep(CLICK_INTERVAL)
                     continue
-                if self.see('select_box_1'):
+                source = self.dev.hierarchy()
+                # 好友页底部轮播可能误命中 select_box_container，不能只凭
+                # select_box_1 断言已进打工面板。点击后 hire 仍存在说明页面根本
+                # 没有跳转（常见于该好友被雇佣已达上限），应换下一个好友。
+                if self.see('hire', source=source):
+                    still_on_friend_page = True
+                    time.sleep(CLICK_INTERVAL)
+                    continue
+                still_on_friend_page = False
+                if self.see('select_box_1', source=source):
                     return
                 time.sleep(CLICK_INTERVAL)
+            if still_on_friend_page:
+                raise FriendUnavailable(
+                    '点击 hire 后页面未变化，可能该好友被雇佣已达上限')
             log(f'点击 hire 后未出现打工面板，重试 ({attempt}/{attempts})')
         raise FriendUnavailable('多次点击 hire 仍未进入打工面板')
 
@@ -262,23 +277,31 @@ class FriendHireScenario(FriendCareScenario):
                         self.wait_hire_ready()
                         self._enter_work_panel()
                     except FriendUnavailable as exc:
-                        failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
                         log(f'{name} 当前不可雇佣（{exc}），继续遍历下一位')
-                        log(f'已计入雇佣失败次数（今天 {failed} 次）')
                     else:
                         selected = name
                         break
+                if len(seen_targets) >= len(names):
+                    log(f'已检查全部 {len(names)} 个配置候选，均不可雇佣')
+                    break
                 if scanned >= scan_limit:
                     log(f'雇佣好友已遍历 {scanned} 位，达到设置上限，结束本轮查找')
                     break
                 if not self.next_friend(visible):
                     break
             if selected is None:
-                self.close()
-                self.ensure_main_page()
+                failed = increment_progress(HIRE_FRIEND_FAILURE_PROGRESS_FILE)
+                log(f'本轮未找到可雇佣好友，计入 1 次雇佣失败（今天 {failed} 次）')
+                # 整轮结果已经确定，回主页面失败也不能让 run_one 重跑整轮并重复计数。
+                # 清理页面只记日志，随后统一 TaskDeferred 到下一次调度。
+                try:
+                    self.close()
+                    self.ensure_main_page()
+                except Exception as exc:
+                    log(f'雇佣失败后回主页面未完成: {exc}')
                 until = datetime.now() + timedelta(seconds=HIRE_CD_POLL_SECONDS)
                 raise TaskDeferred(
-                    until, f'已检查前 {scanned} 位，未遇到可雇佣候选，60 秒后重新检查')
+                    until, f'已检查前 {scanned} 位，未找到可雇佣候选，60 秒后重新检查')
             log(f'已选择可雇佣好友: {selected}')
             # 已进入打工面板，此后的错误按原有失败处理，不再换候选好友。
             self._hire_and_work(panel_ready=True)

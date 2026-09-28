@@ -6,7 +6,8 @@ from unittest.mock import patch
 import tempfile
 
 from scenarios.friend_care import FriendCareScenario
-from scenarios.hire_friend import FriendHireScenario
+from scenarios.hire_friend import FriendHireScenario, FriendUnavailable
+from scenarios.visit import VisitScenario
 from main import ScrcpyContainer
 from src.scenario import TaskDeferred
 from scenarios.care import CareScenario
@@ -17,6 +18,51 @@ from src.config import TaskItemConfig
 
 
 class CustomChangesTest(TestCase):
+    def test_visit_reentry_above_threshold_finishes_without_reloading_list(self):
+        scen = VisitScenario.__new__(VisitScenario)
+        scen.continuous_target = 950
+        scen.exit_complete_count = 200
+        closed = []
+        main_page = []
+        scen.close = lambda: closed.append(True)
+        scen.ensure_main_page = lambda: main_page.append(True)
+        scen._visit_all = lambda *_args: self.fail('达到退出阈值后不应重新进入好友列表')
+
+        with patch('scenarios.visit.load_progress',
+                   return_value=(progress_store.today_str(), 200, {})), \
+                patch('scenarios.visit.log_history'), \
+                patch('scenarios.visit.log_exp_daily'):
+            self.assertFalse(scen.run())
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(len(main_page), 1)
+
+    def test_visit_current_session_ignores_exit_threshold_and_targets_950(self):
+        scen = VisitScenario.__new__(VisitScenario)
+        scen.continuous_target = 950
+        scen.exit_complete_count = 200
+        scen._exp_handled = False
+        targets = []
+        scen.ensure_main_page = lambda: None
+        scen.close = lambda: None
+        scen._visit_all = lambda target, *_args: targets.append(target) or 950
+
+        with patch('scenarios.visit.load_progress',
+                   return_value=(progress_store.today_str(), 199, {})), \
+                patch('scenarios.visit.log_history'), \
+                patch('scenarios.visit.log_exp_daily'):
+            self.assertTrue(scen.run())
+        self.assertEqual(targets, [950])
+
+    def test_visit_scheduler_does_not_reenter_after_exit_threshold(self):
+        runner = TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.visit_times = 950
+        runner.visit_exit_complete_count = 200
+        runner.visit_start = datetime(2000, 1, 1, 0, 0).time()
+        runner.retry_after = {}
+        with patch('scenarios.runner.load_progress',
+                   return_value=(progress_store.today_str(), 200, {})):
+            self.assertFalse(runner.visit_due())
+
     def test_scrcpy_fit_uses_native_client_pixels(self):
         fake = SimpleNamespace(
             _hwnd=123,
@@ -175,6 +221,51 @@ class CustomChangesTest(TestCase):
         self.assertEqual(selected, ['好友 qq2'])
         self.assertEqual(state['begins'], 1)
 
+    def test_hire_unchanged_friend_page_is_not_work_panel(self):
+        scen = FriendHireScenario.__new__(FriendHireScenario)
+        scen.dev = SimpleNamespace(hierarchy=lambda: '<friend-page/>')
+        scen.wait_attempts = lambda _value: 1
+        scen.click = lambda *_args: None
+        scen.dismiss_career_popup = lambda: False
+
+        def see(name, source=None):
+            # 好友页轮播会误命中 select_box；hire 仍在才是决定性证据。
+            return (10, 10) if name in ('hire', 'select_box_1') else None
+
+        scen.see = see
+        with patch('scenarios.hire_friend.time.sleep'):
+            with self.assertRaises(FriendUnavailable):
+                scen._enter_work_panel()
+
+    def test_hire_counts_one_failure_after_all_candidates_unavailable(self):
+        scen = FriendHireScenario.__new__(FriendHireScenario)
+        scen.cfg = SimpleNamespace(hire_friend=SimpleNamespace(
+            enabled=True,
+            friend_name='qq1,qq2',
+            max_scan_count=20,
+            times_per_day=1,
+        ))
+        scen.defer_wait = True
+        friends = ['好友 qq1', '好友 qq2']
+        state = {'index': 0}
+        scen.ensure_main_page = lambda: None
+        scen.detect_busy_remaining = lambda: None
+        scen.begin_friend_walk = lambda: None
+        scen.current_friend = lambda: (friends[state['index']], [])
+        scen.next_friend = lambda _visible: state.__setitem__('index', 1) or True
+        scen.wait_hire_ready = lambda: (_ for _ in ()).throw(FriendUnavailable('CD 未结束'))
+        scen._enter_work_panel = lambda: self.fail('CD 未结束时不应点击 hire')
+        scen.close = lambda: None
+
+        with patch('scenarios.hire_friend.load_progress',
+                   return_value=(progress_store.today_str(), 0, {})), \
+                patch('scenarios.hire_friend.log_history'), \
+                patch('scenarios.hire_friend.increment_progress', return_value=1) as failed:
+            with self.assertRaises(TaskDeferred):
+                scen.run()
+        failed.assert_called_once()
+        self.assertEqual(state['index'], 1)
+
     def test_friend_care_stops_after_configured_scan_limit(self):
         scen = FriendCareScenario.__new__(FriendCareScenario)
         scen.cfg = SimpleNamespace(friend_care=SimpleNamespace(
@@ -230,8 +321,10 @@ class CustomChangesTest(TestCase):
 
         with patch('scenarios.hire_friend.load_progress',
                    return_value=(progress_store.today_str(), 0, {})), \
-                patch('scenarios.hire_friend.log_history'):
+                patch('scenarios.hire_friend.log_history'), \
+                patch('scenarios.hire_friend.increment_progress', return_value=1) as failed:
             with self.assertRaises(TaskDeferred):
                 scen.run()
+        failed.assert_called_once()
         self.assertEqual(state['index'], 2)
         self.assertEqual(state['closes'], 1)

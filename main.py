@@ -143,6 +143,12 @@ class _RecoverSignals(QObject):
     finished = pyqtSignal(bool)  # True=恢复成功（宠物主页已打开），拉起调度器时跳过 opener
 
 
+class _ScreenshotSignals(QObject):
+    """手动截图：后台线程 -> GUI 主线程，截图完成后恢复按钮。"""
+
+    finished = pyqtSignal(bool)
+
+
 class _FocusOutPlainTextEdit(PlainTextEdit):
     """失焦时触发保存回调的多行文本框（QPlainTextEdit 没有 editingFinished）。"""
 
@@ -295,7 +301,8 @@ TASK_SETTING_FIELDS = [
     ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
     ('adventure.batch', '单轮冒险次数', 'int'),
     ('adventure.type', '冒险类型', ['附近走走', '诗和远方']),
-    ('visit.times_per_day', '每天踩踩次数（0 不踩）', 'int'),
+    ('visit.continuous_target', '踩踩连续运行目标（0 不踩）', 'int'),
+    ('visit.exit_complete_count', '踩踩退出后完成阈值（0 禁用）', 'int'),
     ('visit.start_time', '踩踩调度时间', 'str'),
     ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
     ('pk.start_time', 'PK 调度时间', 'str'),
@@ -783,6 +790,9 @@ class MainWindow(MSFluentWindow):
         # 手动重启完成 -> 主线程恢复按钮/拉回调度器（同连接测试的信号模式）
         self._recover_signals = _RecoverSignals()
         self._recover_signals.finished.connect(self._on_recover_finished)
+        # 手动截图复用 GUI 的 u2 连接，后台保存，避免截图期间卡住界面。
+        self._screenshot_signals = _ScreenshotSignals()
+        self._screenshot_signals.finished.connect(self._set_screenshot_btn_enabled)
 
         QTimer.singleShot(0, self._start_all)
 
@@ -890,6 +900,10 @@ class MainWindow(MSFluentWindow):
         self._screen_zoom_button.setFixedSize(36, 36)
         self._screen_zoom_button.setToolTip('让手机画面等比适应左侧面板')
         self._screen_zoom_button.clicked.connect(self._toggle_screen_zoom)
+        self._screen_capture_button = TransparentToolButton(FIF.CAMERA, self._screen_card)
+        self._screen_capture_button.setFixedSize(36, 36)
+        self._screen_capture_button.setToolTip('保存当前手机截图到 runs/screenshots')
+        self._screen_capture_button.clicked.connect(self._capture_screen)
         # 画面卡宽度 = 高度 × 画面比例（_fit_screen_card，窗口缩放/嵌入后重算），
         # 不用 QSplitter：把手在深色主题下会渲染成一条白色竖条，且宽度本就由
         # 高度推导，拖动没有意义
@@ -921,6 +935,7 @@ class MainWindow(MSFluentWindow):
         if card is None:
             return
         button = getattr(self, '_screen_zoom_button', None)
+        capture_button = getattr(self, '_screen_capture_button', None)
         # 两种模式都让容器负责“完整画面等比适应”，始终禁用滚动条。
         self._screen_scroll.setWidgetResizable(False)
         self._screen_scroll.setHorizontalScrollBarPolicy(
@@ -955,6 +970,12 @@ class MainWindow(MSFluentWindow):
         if button:
             button.move(max(10, card.width() - button.width() - 10), 10)
             button.raise_()
+        if capture_button:
+            capture_button.move(
+                max(10, card.width() - capture_button.width()
+                    - (button.width() if button else 36) - 16),
+                10)
+            capture_button.raise_()
         self.scrcpy_view._fit()
 
     def _toggle_screen_zoom(self) -> None:
@@ -969,6 +990,39 @@ class MainWindow(MSFluentWindow):
         QTimer.singleShot(0, self._fit_screen_card)
         # 固定宽度变化后布局会再算一次，补一帧按最终高度精确适应。
         QTimer.singleShot(50, self._fit_screen_card)
+
+    def _set_screenshot_btn_enabled(self, enabled: bool) -> None:
+        """截图线程结束后恢复按钮；窗口关闭时静默忽略。"""
+        try:
+            self._screen_capture_button.setEnabled(enabled)
+        except RuntimeError:
+            pass
+
+    def _capture_screen(self) -> None:
+        """异步抓取手机原始画面并保存，不受 GUI 缩放状态影响。"""
+        self._set_screenshot_btn_enabled(False)
+
+        def work() -> None:
+            try:
+                with self._test_lock:
+                    screen = self._get_test_dev().screenshot()
+                output_dir = APP_ROOT / 'runs' / 'screenshots'
+                output_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                path = output_dir / f'screenshot_{stamp}.png'
+                from PIL import Image
+
+                Image.fromarray(screen).save(path)
+                log(f'手机截图已保存: {path}')
+            except Exception as e:
+                log(f'手机截图失败: {e}')
+            finally:
+                try:
+                    self._screenshot_signals.finished.emit(True)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1273,7 +1327,7 @@ class MainWindow(MSFluentWindow):
                 ('打工', WORK_PROGRESS_FILE, cfg.work.times_per_day),
                 ('冒险', ADVENTURE_PROGRESS_FILE, cfg.adventure.times_per_day),
                 ('提前召回', ADVENTURE_RECALL_PROGRESS_FILE, 0),
-                ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.times_per_day),
+                ('踩踩', VISIT_PROGRESS_FILE, cfg.visit.continuous_target),
                 ('PK', PK_PROGRESS_FILE, cfg.pk.times_per_day),
                 ('被雇佣', EMPLOYED_PROGRESS_FILE, 0),  # 无次数上限，只显示当日次数
                 ('雇佣成功', HIRE_FRIEND_PROGRESS_FILE, cfg.hire_friend.times_per_day),
@@ -1292,7 +1346,10 @@ class MainWindow(MSFluentWindow):
                 counts[label] = done
                 values[label] = f'{done}/{limit}' if limit else str(done)
                 if label == '踩踩':
-                    # 经验日常（好友照顾）当日是否完成：踩踩次数满但经验未完成时仍会继续
+                    # 未到连续目标、但场景已退出且达到提前完成阈值时，明确标出今日已完成。
+                    exit_count = int(cfg.visit.exit_complete_count or 0)
+                    if exit_count and done >= exit_count and (not limit or done < limit):
+                        values[label] += ' ✓'
                     _, exp_done, _ = load_exp_daily(quiet=True)
                     values['经验日常'] = '✓' if exp_done else '✗'
             # 提前召回没有独立配额，分母显示当天实际冒险次数，便于看召回占比。
@@ -1607,13 +1664,19 @@ class MainWindow(MSFluentWindow):
             if start_t is None:
                 return '—'
             start_dt = datetime.combine(now.date(), start_t)
-            times = int(getattr(scene, 'times_per_day', 0) or 0)
+            count_field = 'continuous_target' if key == 'visit' else 'times_per_day'
+            times = int(getattr(scene, count_field, 0) or 0)
+            if not times:
+                return '—'
             done = 0
-            if times:
-                file = {'adventure': ADVENTURE_PROGRESS_FILE, 'visit': VISIT_PROGRESS_FILE,
-                        'pk': PK_PROGRESS_FILE}[key]
-                _, done, _ = load_progress(file, quiet=True)
-            if times and done >= times:
+            file = {'adventure': ADVENTURE_PROGRESS_FILE, 'visit': VISIT_PROGRESS_FILE,
+                    'pk': PK_PROGRESS_FILE}[key]
+            _, done, _ = load_progress(file, quiet=True)
+            finished = done >= times
+            if key == 'visit':
+                exit_count = int(getattr(scene, 'exit_complete_count', 0) or 0)
+                finished = finished or bool(exit_count and done >= exit_count)
+            if finished:
                 nxt = start_dt if start_dt > now else start_dt + timedelta(days=1)
                 return self._fmt_next_dt(nxt, now)
             if start_dt <= now:

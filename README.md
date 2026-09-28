@@ -40,8 +40,10 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
 - **被雇佣检查/召回**：按时间段定时出门检测被雇佣中，按配置"等到 25/75"或"立刻召回"处理，
   召回自动计数后回主页面；被雇佣期间主任务不触发。
 - **好友护理 / 雇佣好友**：按时间段 + 调度间隔巡检指定好友家（ocr检测/一键护理）；
-  雇佣好友会检测雇佣 CD、出门前预检进行中活动，主动延后不误点。
-- **踩踩 / PK**：好友互动按各自 `start_time` 与每天次数调度；踩踩自动跳过已踩过的好友，
+  雇佣好友会检测雇佣 CD 和点击后是否真的进入打工面板，候选全部不可用或达到遍历上限
+  才按整轮计一次失败，出门前预检进行中活动并主动延后。
+- **踩踩 / PK**：好友互动按各自 `start_time` 调度；踩踩进入后尽量连续到 950，若中途
+  退出且已有 200 次则今日完成、不再从头重放（两个数均可配置），并自动跳过已踩好友；
   PK 每个好友可打 3 次、打完自动切换下一个好友。
 - **状态照顾**：任务前读取体力/清洁/心情，按阈值自动喂食、洗澡（持续按压搓洗，
   搓洗按回合复测、连续不提升自动抬手重按自愈，达到上限仍不达标则跳过本次洗澡）；支持一键护理。
@@ -65,7 +67,8 @@ PyQt6（Fluent Widgets）图形界面内嵌 scrcpy 实时画面，任务队列�
   平滑折线图；主题支持 跟随系统/深色/浅色（`gui.theme`，即时切换）；
   调度/任务/设置页可视化修改 config.yaml，保存后**热加载即时生效**（无需重启）；
   "手动重启"按配置执行一次异常恢复，恢复后自动重启调度器；
-  设置页"检查更新"：启动后自动检查一次、之后每 6 小时一次，发现新版本显示 Release 下载链接。
+  设置页"检查更新"：启动后自动检查一次、之后每 6 小时一次，发现新版本显示 Release 下载链接；
+  手机画面右上角可缩放或保存原始截图，截图文件写入 `runs/screenshots/`。
 - **分辨率无关定位**：优先 u2 控件选择器，游戏内自绘按钮用 RapidOCR（PP-OCRv6 tiny）
   整屏文字识别，换分辨率/机型无需改代码。
 
@@ -164,6 +167,7 @@ exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定�
 | `schedule.back_method` | 返回方式：`系统返回`（Android 返回键，默认）/ `返回图标`（定位 back 按钮点击） |
 | `adventure.times_per_day` / `start_time` / `batch` | 每天冒险次数 / 调度时间（HH:MM）/ 单轮连跑次数 |
 | `adventure.skip_bad_weather` | 遇到"天色不对"自动召回计入一次冒险 |
+| `visit.continuous_target` / `visit.exit_complete_count` | 踩踩不中断时的连续目标 / 场景退出后视为今日完成的阈值（默认 950 / 200） |
 | `care.energy_threshold` / `clean_threshold` | 体力 / 清洁阈值，低于则喂食 / 洗澡 |
 | `friend_care.*` / `hire_friend.*` | 好友护理 / 雇佣好友的开关、时间段、好友名、调度间隔、次数 |
 | `employed.*` | 被雇佣检查的开关、时间段、间隔、召回策略 |
@@ -182,7 +186,7 @@ exe 旁 `runs/resources/frida-server/` 即可。注入前会等 QQ 启动稳定�
 | `runs/work_progress.json` | 打工次数 + 历史 + 本次打工时长（`duration`）+ 今日打工时长（`work_secs`） |
 | `runs/adventure_progress.json` 等 | 冒险/踩踩/PK/被雇佣/雇佣成功/经验日常的每日次数 + 历史 |
 | `runs/adventure_recall_progress.json` | 冒险提前召回次数 + 历史 |
-| `runs/hire_friend_failure_progress.json` | 好友未找到、CD 未结束或无法进入雇佣面板的雇佣失败次数 + 历史 |
+| `runs/hire_friend_failure_progress.json` | 整轮候选全部不可用或达到遍历上限的雇佣失败次数 + 历史（一轮只计一次） |
 | `runs/status_cache.json` | 宠物状态缓存（体力/清洁/心情/金币/库存），GUI 状态条读取 |
 | `runs/queue_status.json` | 任务队列状态（当前任务/下一任务/倒计时），GUI 调度页读取 |
 | `runs/logs/YYYY-MM-DD.log` | 按天的运行日志 |
