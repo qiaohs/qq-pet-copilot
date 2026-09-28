@@ -6,6 +6,7 @@ from unittest.mock import patch
 import tempfile
 
 from scenarios.friend_care import FriendCareScenario
+from scenarios.school import SchoolScenario, infer_class_minutes, parse_duration_candidates
 from scenarios.hire_friend import FriendHireScenario, FriendUnavailable
 from scenarios.friend_features import (
     LUCKY_BAG_ABSENT,
@@ -16,16 +17,111 @@ from scenarios.friend_features import (
 )
 from scenarios.visit import VisitScenario
 from main import ScrcpyContainer
-from src.scenario import TaskDeferred
+from src.scenario import DeviceScenario, TaskDeferred
 from scenarios.care import CareScenario
 from scenarios.runner import TaskQueueRunner, _QueueTask
 from src import progress, progress_store
 from src.coins import read_coins_from_ocr
-from src.config import TaskItemConfig
-from src.adb.device import Device
+from src.config import NotifyConfig, TaskItemConfig
+from src.adb.device import AdbError, Device
+from src import notify
+from src.update_checker import _is_remote_newer
+from src.version import APP_VERSION
 
 
 class CustomChangesTest(TestCase):
+    def test_custom_version_detects_official_072_update(self):
+        self.assertEqual(APP_VERSION, '0.7.1c')
+        self.assertFalse(_is_remote_newer(APP_VERSION, '0.7.1'))
+        self.assertTrue(_is_remote_newer(APP_VERSION, '0.7.2'))
+
+    def test_adb_input_text_uses_requested_shortcut_phrase(self):
+        dev = Device.__new__(Device)
+        dev.ensure_connected = lambda: 'serial'
+        calls = []
+        dev._run = lambda *args, **_kwargs: calls.append(args)
+        dev.input_text('local-only')
+        self.assertEqual(calls, [('shell', 'input', 'text', 'local-only')])
+
+    def test_adb_input_failure_does_not_expose_shortcut_phrase(self):
+        dev = Device.__new__(Device)
+        dev.ensure_connected = lambda: 'serial'
+        dev._run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AdbError('adb shell input text sensitive-value'))
+        with self.assertRaises(AdbError) as caught:
+            dev.input_text('sensitive-value')
+        self.assertNotIn('sensitive-value', str(caught.exception))
+
+    def test_study_duration_matches_configured_candidates(self):
+        self.assertEqual(parse_duration_candidates('45，135,45'), (45, 135))
+        self.assertEqual(infer_class_minutes(44 * 60 + 40, 10, (45, 135)), 45)
+        self.assertEqual(infer_class_minutes(2 * 3600 + 14 * 60 + 40, 10,
+                                             (45, 135)), 135)
+        self.assertEqual(infer_class_minutes(59 * 60, 30, (30, 60, 90)), 60)
+
+    def test_detected_study_duration_does_not_replace_fallback(self):
+        scen = SchoolScenario.__new__(SchoolScenario)
+        scen.duration_minutes = 135
+        scen._class_duration_detected = False
+        scen._detected_duration_minutes = None
+        with (patch('scenarios.school.get_current_school', return_value='高级学园'),
+              patch('scenarios.school.set_current_school') as save):
+            scen._save_detected_duration(45, '测试')
+        save.assert_called_once_with('高级学园', 45)
+        self.assertEqual(scen.duration_minutes, 135)
+        self.assertEqual(scen._detected_duration_minutes, 45)
+
+    def test_employed_recall_notifies_only_after_successful_settlement(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.cfg = SimpleNamespace(
+            employed=SimpleNamespace(action='立刻召回'))
+        scen.screen = lambda: object()
+        scen.snapshot = lambda: (object(), object())
+        scen.click = lambda *_args: None
+
+        def see(name, *_args):
+            if name in ('employed_come_back_confirm', 'employed_end', 'quit'):
+                return 10, 10, 1.0
+            return None
+
+        scen.see = see
+        with patch('src.scenario.time.sleep'), \
+                patch('src.scenario.count_cross') as counted, \
+                patch('src.scenario.send_employed_recall') as sent:
+            scen._recall_employed()
+        counted.assert_called_once_with('employed')
+        sent.assert_called_once_with('立刻召回')
+
+    def test_critical_notification_is_persistently_cooled_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / 'notify_state.json'
+            cfg = NotifyConfig(
+                critical_errors=True,
+                duplicate_cooldown_minutes=360,
+                win_toast=True,
+                onepush_config='',
+            )
+            with patch.object(notify, '_STATE_FILE', state_file), \
+                    patch.object(notify, '_load_notify_config', return_value=cfg), \
+                    patch.object(notify, '_send_windows_toast', return_value=True) as toast:
+                self.assertTrue(notify.send_alert('需要查看', event_key='same_error'))
+                self.assertFalse(notify.send_alert('再次出现', event_key='same_error'))
+            toast.assert_called_once()
+            self.assertIn('same_error', state_file.read_text(encoding='utf-8'))
+
+    def test_employed_recall_uses_bark_compatible_onepush_channel(self):
+        cfg = NotifyConfig(
+            employed_recall=True,
+            win_toast=False,
+            onepush_config='{provider: bark, key: test}',
+        )
+        with patch.object(notify, '_load_notify_config', return_value=cfg), \
+                patch.object(notify, '_send_onepush', return_value=True) as onepush:
+            self.assertTrue(notify.send_employed_recall('等到25/75'))
+        args = onepush.call_args.args
+        self.assertEqual(args[1], notify.RECALL_TITLE)
+        self.assertIn('等到25/75', args[2])
+
     def test_gui_screenshot_uses_valid_adb_png(self):
         dev = Device.__new__(Device)
         dev.ensure_connected = lambda: 'serial'
@@ -104,6 +200,27 @@ class CustomChangesTest(TestCase):
         self.assertEqual(clicks, [(465, 1255), (465, 1255)])
         self.assertEqual(scen._friend_index, 1)
         self.assertEqual(scen._friends, ['好友 A', '好友 B', '好友 C'])
+
+    def test_next_friend_does_not_treat_duplicate_name_as_list_end(self):
+        scen = VisitScenario.__new__(VisitScenario)
+        scen._friends = ['好友 A', '好友 B']
+        scen._friend_index = 1
+        scen._current_friend_x = 269
+        scen.wait_attempts = lambda value: value
+        before = [('好友 A', 78, 1255), ('好友 B', 269, 1255),
+                  ('好友 A', 465, 1255)]
+        after = [('好友 B', 78, 1255), ('好友 A', 269, 1255),
+                 ('好友 C', 465, 1255)]
+        frames = iter([after])
+        scen._friend_items = lambda: next(frames)
+        clicks = []
+        scen.click = lambda x, y: clicks.append((x, y))
+
+        with patch('scenarios.visit.time.sleep'):
+            self.assertTrue(scen.next_friend(before))
+        self.assertEqual(clicks, [(465, 1255)])
+        self.assertEqual(scen._friend_index, 2)
+        self.assertEqual(scen._friends, ['好友 A', '好友 B', '好友 A', '好友 C'])
 
     def test_visit_current_session_ignores_exit_threshold_and_targets_950(self):
         scen = VisitScenario.__new__(VisitScenario)

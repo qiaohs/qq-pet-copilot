@@ -44,7 +44,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | --- | --- |
 | `main.py` | PyQt6 GUI，**界面基于 PyQt6-Fluent-Widgets**（requirements 已加 `PyQt6-Fluent-Widgets>=1.11,<2`，不要装 [full] 扩展会拉 scipy）：`MSFluentWindow` + 左侧导航栏（主页/调度/统计/任务/设置；设置页固定导航底部；主题按 `gui.theme` 配置（跟随系统/深色/浅色，`THEME_MAP`），启动时 `setTheme`、设置页改动即时生效）。**顶部全局工具栏**（`_install_toolbar` 把 stackedWidget 包进右侧容器：上工具栏下页面，切页不受影响）：开始 PrimaryPushButton、停止、画面镜像 SwitchButton（开关状态持久化 `gui.mirror`，`_toggle_scrcpy` 里写回，启动时 `load_config().gui.mirror` 恢复）、连接测试、手动重启 + 右侧运行时间 label。主页 = 左侧 scrcpy 画面卡片（SetParent 嵌入，**9:16 竖屏**：`ScrcpyContainer` 报竖屏 sizeHint/heightForWidth，`embed` 优先取 scrcpy 窗口客户区真实尺寸做嵌入比例（自适应任何设备/--max-size，用设备物理分辨率比例会留两侧黑边），`_aspect` 未知按 (9,16) 兜底 `_fit`，画面卡宽度随高度自适应收拢（`_fit_screen_card`：fixed width = 高度×画面比例，嵌入后/窗口缩放重算；**不用 QSplitter**——把手在深色主题下渲染成白色竖条；容器未嵌入时透明背景跟随主题，不写死黑色）+ 右侧卡片列（宠物状态横排一行/任务队列卡/今日统计（三行网格：学习(h)/工作(h) 时长拆分 + 各任务当日次数 + 提前召回/雇佣成功/雇佣失败）/日志卡——三张卡内容都按列等宽均分（单元格 addWidget(cell, 1)，不要挤在左侧）——`log_view` 在主页吃剩余空间，状态/队列/今日卡垂直 sizePolicy Maximum 紧贴内容；**任务队列卡**（当前任务/下一任务/待执行/等待中）调度器运行时读 `runs/queue_status.json`、未运行按配置推算（`_predict_queue_summary` 复用调度页 `_predict_next`，按 `tasks.order` 顺序取第一个非"—"任务为下一任务）；分组卡片全用 `CompactCardWidget`（紧凑版 HeaderCardWidget：标题栏 48→34、内容边距 24→16/10/16/12，原版 chrome 占高 ~96px 一页放不了几组）；注意 `HeaderCardWidget.viewLayout` 是 QHBoxLayout，竖排内容要包一层 body widget）；调度页 = 每任务 开关（SwitchButton 开/关）/执行间隔（每日时间）/启用时段 可直接编辑（保存 config.yaml 热加载生效），下次执行 = 调度器运行时读 `runs/queue_status.json` 的 tasks 段、未运行时按配置推算的详细时间；任务/设置页 = `SETTING_FIELDS`/`TASK_SETTING_FIELDS` 数据驱动表单，按配置键第一段分组进 CompactCardWidget（分组标题映射 `SETTING_GROUP_TITLES`，任务页 = 任务队列顺序 + 场景任务设置，设置页 = 连接/调度引擎/全局规则/告警 + 关于与更新卡片），**分组卡片两列排布**（`TwoColumnCardsPanel`：QHBoxLayout 两个竖列、列尾 stretch 顶格，`_build_settings_form` 填完字段后 `finalize()` 按 sizeHint 高度把卡片平衡进较矮列，等宽；别用 FlowLayout——行高=该行最高卡片会在同列卡片间留白）；切页加载配置按页面 objectName 判定（`_on_tab_changed`，不依赖页序）；表单控件全用 fluent 类（SwitchButton 信号是 `checkedChanged` 不是 stateChanged；devices 下拉用 `_NoInsertEditableComboBox`——EditableComboBox 回车默认把输入追加进下拉，已改写拦截；**fluent ComboBox.addItem 签名是 (text, icon=None, userData=None)，userData 必须关键字传**（位置传参被当 icon、data 全 None，设备序列号下拉曾因此选啥都存成空）；HyperlinkLabel 的 (url, text) 重载要求 url 传 QUrl，传 str 会被当成 (text, parent) 重载（显示原始 URL、点击无效）；非 editable 的 fluent ComboBox **不是** QComboBox 子类但同名 API 基本兼容）、调度器子进程控制、scrcpy 看门狗（设备重启后自动重拉重嵌入；进程活着但没嵌上——多开同时拉起窗口创建慢、嵌入轮询已超时——看门狗补挂嵌入轮询，窗口出现即自动嵌入）、"手动重启"按钮
 （按 `recover.method` 执行一次异常恢复 `reenter_pet`，调度器在跑先停，恢复期间开始/停止按钮禁用，恢复完成自动启动调度器）；设置页"检查更新"按钮 + 启动自动检查一次/每 6 小时一次（`src/update_checker.py`，
-有更新时设置页显示 Release 链接并打日志）；画面卡右上角提供缩放和截图按钮，截图异步保存手机原始画面到 `runs/screenshots/`，不受 GUI 缩放影响；标题栏带版本号（`src/version.py` 的 `APP_VERSION`）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
+有更新时设置页显示 Release 链接并打日志）；画面卡左上角提供截图/缩放/锁头三个半透明悬浮按钮（Windows 下是归属于主窗口的无边框 Tool 窗口，以便真正叠在原生 scrcpy HWND 上并透出手机画面；悬浮后不透明，切页/最小化/移动时同步隐藏或跟随），截图异步保存手机原始画面到 `runs/screenshots/`，锁头通过 `gui.shortcut_phrase` 异步发送本地快捷短语（设置页密码样式，示例配置留空），两者均不创建额外 u2 连接；标题栏带版本号（`src/version.py` 的 `APP_VERSION`，当前自定义版 `0.7.1c`；版本比较会把数值核心视为 `0.7.1`，因此官方 `0.7.2` 仍会提示更新）；**scrcpy 必须带 `--port=按序列号分配的固定端口`（`_scrcpy_port`，含无头关屏 scrcpy）**：默认范围 27183:27199 在 Windows 下多个 scrcpy 能同时绑定 27183（SO_REUSEADDR 语义），各设备 adb reverse 回连被投递到错误的 scrcpy 进程——双开同时开镜像画面串台/两窗口同一画面/Server connection failed |
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history）；坐标轴文字/网格颜色跟随 Fluent 明暗主题（`_text_color()`/`_grid_color()` 读 `isDarkTheme()`，自绘不吃样式表） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
@@ -64,7 +64,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `src/queue_status.py` | 任务队列状态缓存（`runs/queue_status.json`）：TaskQueueRunner 每轮调度后写当前任务/下一任务（含等待点时间，HH:MM:SS + next_ts 时间戳，GUI 显示"xx秒后"倒计时）/待执行数量（在等退避/每日窗口/pending 收尾时间，主任务组 pending 也算一项）/等待中数量（现在就可执行、等调度器轮到），执行中任务在 `_execute` 里先写一次；GUI 状态条加一行每秒读一次（调度器未运行时不读，显示"调度器未运行"）；legacy 引擎不写 |
 | `src/config.py` | dataclass 配置 + 路径规划：`APP_ROOT`（可写）/ `RESOURCE_ROOT`（包内资源），`resource_path()` APP_ROOT 优先 |
 | `src/settings.py` | ruamel 往返读写 config.yaml（保留注释），GUI 设置页用 |
-| `src/notify.py` | 失败告警通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等），发送失败只记日志 |
+| `src/notify.py` | 关键事件通知：Windows Toast（winotify）+ OnePush 多渠道推送（Bark/PushPlus/Server酱/SMTP/自定义 webhook 等）；被雇佣召回成功通知，需人工介入的致命异常告警，同类异常在 `runs/notify_state.json` 持久化冷却去重，发送失败只记日志 |
 | `tools/dump_hierarchy.py` | 抓当前屏幕控件树 XML 存到 `xml/page.xml`（校准 locators 的 xpath/content-desc 用；`xml/` 已 git 排除） |
 | `tools/fetch_scrcpy.py` | 从官方 GitHub Release 下载解压 scrcpy（win64）到 `resources/scrcpy-win64/`（不入库）；`--version` 指定版本、`--force` 强制覆盖，build.py / CI 打包前自动调用 |
 | `tools/fetch_frida_server.py` | 下载 frida-server 离线包到 `resources/frida-server/`（不入库）；`--version`/`--arch`（可多个）/`--force`，GitHub 直连失败自动试镜像；源码运行 `src/opener.py` 缺失时自动调用（xz 不随 exe 打包，打包版兜底触发时按提示手动放置） |
@@ -224,7 +224,8 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   （`visit_due()` / `pk_due()`），跑对应场景 `run()` 完整流程；踩踩进入好友页后不中途
   让出调度，尽量连续达到 `visit.continuous_target`（默认 950）。若场景异常退出或程序重启，
   下一次调度前持久化次数达到 `visit.exit_complete_count`（默认 200）就视为今日完成，
-  不再从第一个好友重放；该退出阈值不参与当前 `_visit_all` 循环的中途判断。
+  不再从第一个好友重放；该退出阈值不参与当前 `_visit_all` 循环的中途判断。好友轮播
+  必须按槽位坐标推进，昵称不是唯一键（存在重名好友，按昵称去重会误判列表结束）。
 - **护理调度**：每次护理检查（`check_and_care`，体力/清洁不足则喂食/洗澡）按
   `care.interval_seconds`（默认 60 秒，距上次检查起算，`care_due()`）节流，
   两种引擎共用（legacy 主循环每轮开头、队列引擎 care 任务）；场景上次检查时间
@@ -290,9 +291,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   （基类 `wait_employed_back` 仍是阻塞版，供主任务流程 `wait_busy_end` 用）；
   不在 `tasks.order` 里——队列引擎到点优先于队列任务先检查（`_run_employed_check`），
   巡检无论是否检测到都返回 True（同好友护理，False 会被标记当天不可继续）；
-  - **学习/工作时长规则（替代旧“每日点数”）**：学习结算按持久化的手动时长累计
-    （`school_progress.json` 的 `school` + `duration_minutes`，设置页默认135分钟，学习开始时
-    `set_current_school` 原子更新）；打工结算按持久化的 `work.duration` 累计
+  - **学习/工作时长规则（替代旧“每日点数”）**：学习开课后将 OCR 剩余时间加上已耗时，
+    匹配 `school.duration_candidates`（默认 45,135）中最接近的一项；OCR 失败在结算时按
+    实际耗时再匹配，仍失败才使用 `school.duration_minutes` 兜底。最终时长持久化到
+    `school_progress.json` 的 `school` + `duration_minutes`；打工按持久化的 `work.duration` 累计
     （`work_progress.json` 的 `duration`：10分钟/45分钟/2小时）。累计时长（秒）存
     `study_secs`/`work_secs`，`load_durations()` 读取（GUI 日志页“今日”显示
     `已学习/工作/总时长（小时）0.0/0.0/0.0` 1 位小数）；`_duration_over` 判断
@@ -311,6 +313,11 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
     禁止整字典替换成 `{date}`（曾因此把 school_progress.json 的 history/learned 全丢）。
   **被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发**（队列 `_main_choice`
   返回 None，pending 收尾不受影响；legacy 跳过冒险/雇佣好友/学习打工段睡到下次检查）。
+  召回确认、结算页出现、点 quit 并完成计数后由 `send_employed_recall`
+  发成功通知；被雇佣检查/召回用尽分级重试则发关键异常告警，
+  `notify.duplicate_cooldown_minutes` 默认 360 分钟去重。调度器初始化失败或其他
+  未捕获硬故障同样告警；通知开关为 `notify.employed_recall` /
+  `notify.critical_errors`。
 - 控制台中文乱码是 Windows GBK 终端显示问题，日志文件（UTF-8）里是正常的，不要当 bug 修。
 - **模拟器模式**（`--emulator`）：模拟器里 QQ 搜索卡片的宠物入口默认是空的（点不到
   `Q宠-*`），由 `src/opener.py` 打开宠物主页。**当前方案零注入**（旧版全程常驻 frida

@@ -13,6 +13,8 @@ gui:
   theme: 跟随系统
   # 画面镜像开关（主页工具栏开关状态持久化）
   mirror: true
+  # 手机画面锁头按钮发送的快捷短语；可能含密码，请只填写在本地 config.yaml
+  shortcut_phrase: ''
   # 日志框保留最近多少行（完整日志仍在 runs/logs/ 当日日志文件中）
   log_max_lines: 500
 
@@ -41,8 +43,10 @@ school:
   attribute: "力量"
   # 每天学习次数上限，0 为不限；进度按天持久化，中途停止后重跑会接着计数
   times_per_day: 0
-  # 每次学习的实际时长（分钟），用于统计及学习/打工总时长上限
+  # 开课倒计时识别失败时的兜底时长（分钟）
   duration_minutes: 135
+  # 可能出现的学习时长（分钟，逗号分隔）；自动按倒计时取最接近的一项
+  duration_candidates: 45,135
 
 work:
   # 打工地点（OCR 文字匹配），如：风铃旅社 / 星尘魔法塔 / 彩虹画室
@@ -56,8 +60,8 @@ work:
   employ_scroll_limit: 5
 
 schedule:
-  # 学习工作时长上限（小时）：学习按 school.duration_minutes、
-  # 打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= 上限后今天不再学习只打工；0 = 不限
+  # 学习工作时长上限（小时）：学习按自动识别结果（失败用 duration_minutes）、
+  # 打工按所选时长（10分钟/45分钟/2小时）结算，累计 >= 上限后今天不再学习只打工；0 = 不限
   # 旧版字段（仅首次运行迁移用，不再参与调度、不进设置页）：
   # 学习/打工点数系数 = 每节/每次的分钟数，老进度只有次数时据此换算时长
   school_factor: 20
@@ -269,7 +273,13 @@ employed:
   action: 等到25/75（小于45min）
 
 notify:
-  # 场景多次重试仍失败时的告警通知（主任务通知后调度器退出，需人工查看）
+  # 被雇佣宠物被程序成功召回后通知：true/false
+  employed_recall: true
+  # 仅通知需要人工介入的严重问题：主任务彻底失败、无法进入宠物页、
+  # 调度器无法恢复、被雇佣检查/召回连续失败和未捕获的致命异常。
+  critical_errors: true
+  # 同类致命异常发送成功后的冷却时间（分钟）；0 表示不去重
+  duplicate_cooldown_minutes: 360
   # Windows 桌面 Toast 通知：true/false
   win_toast: true
   # OnePush 推送配置（YAML，设置页里是多行输入框；留空不推送），

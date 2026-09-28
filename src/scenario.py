@@ -10,6 +10,7 @@ from .locators import LOCATORS, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
 from .ocr import parse_employed_ratio, parse_employed_remaining
+from .notify import send_employed_recall
 from .progress import (
     HIRE_FRIEND_PROGRESS_FILE,
     count_cross,
@@ -446,6 +447,9 @@ class DeviceScenario:
         else:
             log('未找到 quit 按钮，直接返回')
         count_cross('employed')  # 点完 quit 就计数
+        # 只有确认召回、出现结算页并完成计数后才通知，
+        # 不会因 OCR 误判或中途失败发出假成功消息。
+        send_employed_recall(getattr(self.cfg.employed, 'action', '按配置策略'))
 
     def wait_employed_back(self, check_interval: float | None = None) -> None:
         """被雇佣中：按配置 employed.action 决定召回时机（阻塞等到召回条件满足）。

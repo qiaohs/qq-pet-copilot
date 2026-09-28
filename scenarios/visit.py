@@ -172,25 +172,54 @@ class VisitScenario(DeviceScenario):
         """切换到下一个好友：按累积名单顺序点下一个。
 
         好友列表滚动加载，控件树里只有当前可见项：每次重新抓取只把
-        新出现的好友追加到累积名单尾部（不删除滚出屏幕的项），切换索引
-        基于累积名单。点击后必须看到轮播名单或坐标实际变化才算切换成功；
-        否则重试，避免一次点击丢失后把仍有后续好友误判成列表结束。
+        新出现的好友追加到累积名单尾部（不删除滚出屏幕的项）。昵称允许
+        重复：当右侧候选与已访问好友同名时，按轮播坐标继续前进，不能把
+        重复昵称误判成列表结束。点击后必须看到轮播名单或坐标实际变化才
+        算切换成功；否则重试，避免一次点击丢失后误判。
         """
         # 调用方刚抓过列表时可传进来复用，避免同一画面连续 dump 两次并重复日志。
         if visible is None:
             visible = self._wait_friend_items(required=True)
-        new = [desc for desc, _, _ in visible if desc and desc not in self._friends]
+        if not self._friends:
+            # 第一次把当前可见槽位原样记下，不能按昵称去重：好友允许同名。
+            self._current_friend_x = None
+            self._friends.extend(desc for desc, _, _ in visible if desc)
+            new = list(self._friends)
+        else:
+            new = [desc for desc, _, _ in visible if desc and desc not in self._friends]
         for desc in new:
-            self._friends.append(desc)
+            if len(self._friends) == 0 or desc not in self._friends:
+                self._friends.append(desc)
         # 好友多时完整累积名单会在每次切换时成倍刷屏。只打印本轮首次出现的
         # 名字；已打印过的名字不再重复，累计数量仍保留用于观察遍历进度。
         if new:
             log(f'新增好友({len(new)}，累计 {len(self._friends)}): ' + ', '.join(new))
+        current_desc = (self._friends[self._friend_index]
+                        if self._friend_index < len(self._friends) else '')
+        current_x = getattr(self, '_current_friend_x', None)
+        if current_x is None:
+            current_hits = [(x, y) for desc, x, y in visible if desc == current_desc]
+            if current_hits:
+                # 进入好友页时默认选中最左槽；之后每次成功切换都会记录中心坐标。
+                current_x = min(x for x, _ in current_hits)
+                self._current_friend_x = current_x
         next_index = self._friend_index + 1
+        forced_target = None
         if next_index >= len(self._friends):
-            return False
+            # 没出现“新昵称”不等于没有下一位；右侧可能正好是重名好友。
+            right = [(desc, x, y) for desc, x, y in visible
+                     if desc and current_x is not None and x > current_x + 20]
+            if not right:
+                return False
+            forced_target = min(right, key=lambda item: item[1])
+            self._friends.append(forced_target[0])
         target = self._friends[next_index]
-        for desc, x, y in visible:
+        target_items = ([forced_target] if forced_target else
+                        [(desc, x, y) for desc, x, y in visible
+                         if desc == target and (current_x is None or x > current_x + 20)])
+        if not target_items:
+            target_items = [(desc, x, y) for desc, x, y in visible if desc == target]
+        for desc, x, y in target_items:
             if desc == target:
                 before_names = tuple(item_desc for item_desc, _, _ in visible)
                 click_attempts = self.wait_attempts(FRIEND_SWITCH_CLICK_RETRIES)
@@ -204,8 +233,12 @@ class VisitScenario(DeviceScenario):
                         if not after:
                             continue
                         after_names = tuple(item_desc for item_desc, _, _ in after)
-                        target_x = next((item_x for item_desc, item_x, _ in after
-                                         if item_desc == target), None)
+                        after_xs = sorted(item_x for _, item_x, _ in after)
+                        center_x = after_xs[len(after_xs) // 2]
+                        matching_xs = [item_x for item_desc, item_x, _ in after
+                                       if item_desc == target]
+                        target_x = (min(matching_xs, key=lambda item_x: abs(item_x - center_x))
+                                    if matching_xs else None)
                         # 正常选中后目标会向轮播中央移动约 50px，或列表滑出/滑入一人。
                         # 忽略控件边界 1-2px 的轻微抖动，避免把未生效误当作已切换。
                         moved = (after_names != before_names
@@ -219,6 +252,7 @@ class VisitScenario(DeviceScenario):
                             log(f'新增好友({len(appeared)}，累计 {len(self._friends)}): '
                                 + ', '.join(appeared))
                         self._friend_index = next_index
+                        self._current_friend_x = target_x
                         return True
                     if attempt < click_attempts:
                         log(f'目标 {target} 点击后轮播未移动，重新点击 '

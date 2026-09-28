@@ -17,8 +17,9 @@
   低于 care 阈值则喂食/洗澡到达标
 - 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 学习工作时长规则：学习按 school.duration_minutes（默认135分钟）、
-  打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
+- 学习工作时长规则：学习优先按倒计时或实际耗时匹配
+  school.duration_candidates，识别失败才用 school.duration_minutes；打工按所选时长
+  （10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
   后今天不再学习只打工，第二天自动清零
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
 - 金币 >= schedule.coin_threshold -> 优先学习
@@ -109,7 +110,7 @@ from scenarios.employed import EmployedScenario
 from scenarios.friend_care import FriendCareScenario, in_time_range, parse_time_range
 from scenarios.hire_friend import FriendHireScenario
 from scenarios.pk import PKDeferred, PKScenario
-from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario
+from scenarios.school import ATTRIBUTE_COURSES, SchoolScenario, parse_duration_candidates
 from scenarios.visit import VisitScenario, visit_finished_after_exit
 from scenarios.work import DURATION_BOXES, WorkScenario
 
@@ -214,7 +215,8 @@ class Runner:
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
         log(f'金币阈值: {self.threshold}，'
             f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
-            f'（每次学习 {self.school_duration_minutes} 分钟、打工按所选时长结算），'
+            f'（学习候选 {"/".join(map(str, self.school.duration_candidates))} 分钟，'
+            f'识别失败兜底 {self.school_duration_minutes} 分钟；打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
         self.visit_times = int(visit.continuous_target)
@@ -398,7 +400,7 @@ class Runner:
                 last = f'{name} 护理后重试仍被体力/清洁不足拦截'
                 log(last)
                 if fatal:
-                    self._alert_and_exit(last)
+                    self._alert_and_exit(last, f'fatal_task:{name}')
                 raise ScenarioFailed(last)
         except (PKDeferred, TaskDeferred):
             raise  # 场景主动要求临时推迟（如 PK 连续超时 / 雇佣好友发现活动进行中），不做重试/恢复
@@ -418,7 +420,7 @@ class Runner:
         else:
             last = f'{name} 恢复失败'
         if fatal:
-            self._alert_and_exit(last)
+            self._alert_and_exit(last, f'fatal_task:{name}')
         raise ScenarioFailed(last)
 
     def _reschedule(self, name: str) -> None:
@@ -446,11 +448,22 @@ class Runner:
         time.sleep(max(1.0, (at - datetime.now()).total_seconds()))
         return True
 
-    def _alert_and_exit(self, reason: str) -> None:
+    def _alert_and_exit(self, reason: str, event_key: str = 'fatal_exit') -> None:
         """多次重试仍失败：发告警通知（附当前手机屏幕截图）后退出调度器。"""
         log(f'{reason}，发送告警通知并退出调度器')
-        send_alert(reason, self._capture_alert_image())
+        send_alert(reason, self._capture_alert_image(), event_key=event_key)
         raise SystemExit(1)
+
+    def _notify_employed_failure(self, reason: str) -> None:
+        """被雇佣检查/召回已用尽分级重试，需要用户知情。
+
+        这个任务不能像普通支线一样长期静默失败：召回失败会让宠物
+        持续占用互斥状态。通知层按 event_key 持久化冷却，避免每次延后
+        重试都推送。
+        """
+        message = f'被雇佣检查/召回连续重试仍失败，需要人工查看: {reason}'
+        log(f'{message}，尝试发送关键异常通知')
+        send_alert(message, event_key='employed_check_failed')
 
     def _capture_failure_image(self, stage: str) -> str | None:
         """分级重试的中间异常截图存到 runs/ 供排查（不发告警通知）。
@@ -583,6 +596,8 @@ class Runner:
         else:
             log(f'学习时长配置无效 {cfg.school.duration_minutes!r}，'
                 f'沿用 {self.school_duration_minutes} 分钟')
+        self.school.duration_candidates = parse_duration_candidates(
+            cfg.school.duration_candidates)
         if cfg.school.attribute in ATTRIBUTE_COURSES:
             self.school.attribute = cfg.school.attribute
         else:
@@ -622,7 +637,8 @@ class Runner:
             serial = self.opener_serial or self.school.dev.adb.serial
             open_pet_page(serial=serial, adb_path=self.school.dev.adb.adb)
         except Exception as e:
-            self._alert_and_exit(f'模拟器模式打开宠物主页失败: {e}')
+            self._alert_and_exit(
+                f'模拟器模式打开宠物主页失败: {e}', 'startup_pet_page')
 
     def _ensure_pet_page_or_relaunch(self) -> None:
         '''真机启动检查：识别不到宠物主页面时，不在当前页面按 back（可能根本不在游戏里，
@@ -640,7 +656,7 @@ class Runner:
         try:
             dev = reenter_pet(self.school.dev.adb, '重启游戏')
         except Exception as e:
-            self._alert_and_exit(f'启动进入宠物页失败: {e}')
+            self._alert_and_exit(f'启动进入宠物页失败: {e}', 'startup_pet_page')
             return
         for scen in (self.school, self.work, self.adventure, self.care, self.visit, self.pk,
                      self.friend_care, self.hire_friend, self.employed):
@@ -690,7 +706,8 @@ class Runner:
                     log('到达被雇佣检查时间，出门检查是否被雇佣中')
                     try:
                         self.run_one(self.employed, '被雇佣检查', fatal=False)
-                    except ScenarioFailed:
+                    except ScenarioFailed as e:
+                        self._notify_employed_failure(str(e))
                         self._reschedule('被雇佣')
                         # 中断时页面可能停在出门页，先退回主页面再继续调度
                         try:
@@ -876,7 +893,9 @@ class Runner:
                 # 恢复失败（连续 RECOVERY_LIMIT 次）发告警通知后退出
                 log(f'调度循环异常: {e}')
                 if not self.recover():
-                    self._alert_and_exit(f'调度循环异常且恢复失败: {e}')
+                    self._alert_and_exit(
+                        f'调度循环异常且恢复失败: {e}',
+                        'scheduler_recovery_failed')
 
 
 # ---- 任务队列调度（engine: task_queue） ----
@@ -1012,7 +1031,9 @@ class TaskQueueRunner(Runner):
                 # 恢复失败（连续 RECOVERY_LIMIT 次）发告警通知后退出
                 log(f'调度循环异常: {e}')
                 if not self.recover():
-                    self._alert_and_exit(f'调度循环异常且恢复失败: {e}')
+                    self._alert_and_exit(
+                        f'调度循环异常且恢复失败: {e}',
+                        'scheduler_recovery_failed')
 
     # ---- 配置 ----
 
@@ -1358,7 +1379,8 @@ class TaskQueueRunner(Runner):
         try:
             try:
                 self.run_one(self.employed, '被雇佣检查', fatal=False)
-            except ScenarioFailed:
+            except ScenarioFailed as e:
+                self._notify_employed_failure(str(e))
                 at = now + timedelta(seconds=SIDE_TASK_RETRY_DELAY)
                 self.retry_after['被雇佣'] = at
                 log(f'被雇佣检查多次重试仍失败，延后到 {at:%H:%M} 重试，先执行其他任务')
@@ -1700,3 +1722,10 @@ if __name__ == '__main__':
             run_scheduler(use_opener, args.emulator_device, skip_opener=args.skip_opener)
         except KeyboardInterrupt:
             log('手动停止')
+        except Exception as e:
+            # Runner 内的可恢复异常都有分级重试；能逃到这里的是
+            # 初始化失败或未捕获的硬故障，调度器已无法继续。
+            reason = f'调度器遇到未恢复的致命异常: {type(e).__name__}: {e}'
+            log(reason)
+            send_alert(reason, event_key=f'runner_uncaught_fatal:{type(e).__name__}')
+            raise

@@ -144,7 +144,7 @@ def count_cross(finished: str) -> None:
         record_work_finish()
 
 
-# ---- 学习/工作时长累计（学习按手动配置、打工按选择时长结算） ----
+# ---- 学习/工作时长累计（学习按自动识别/配置兜底、打工按选择时长结算） ----
 # 各学园一节课对应的学习时长（秒）
 SCHOOL_DURATION_SECONDS = {
     '初级学园': 10 * 60,
@@ -167,7 +167,7 @@ def get_current_school() -> str | None:
 
 
 def set_current_school(school: str, duration_minutes: int | None = None) -> None:
-    """学习开始时原子记录当前学园及本节手动配置时长。"""
+    """学习开始时原子记录当前学园及本节识别值或配置兜底时长。"""
     values = {'school': school}
     if duration_minutes is not None and int(duration_minutes) > 0:
         values['duration_minutes'] = int(duration_minutes)
@@ -204,7 +204,7 @@ def _add_seconds(progress_file: Path, key: str, seconds: int) -> int:
 
 
 def record_study_finish() -> int | None:
-    """一节课结算：按学习开始时持久化的手动时长累计。"""
+    """一节课结算：按学习开始后持久化的识别值或配置兜底时长累计。"""
     school = get_current_school()
     minutes = get_current_study_minutes()
     if not minutes:
@@ -297,7 +297,7 @@ def load_durations(school_factor: int = 0, work_factor: int = 0,
     首次运行新版本：老进度今天只有次数没有时长时，按旧版 学习/打工点数系数
     （即每节/每次的分钟数）自动换算补上，之后正常累计。
     """
-    # 学习时长已改为用户配置；旧 school_factor 只保留函数签名兼容，不再用于迁移。
+    # 学习时长由自动识别或用户配置兜底；旧 school_factor 只保留函数签名兼容。
     _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', study_duration_minutes)
     _migrate_old_durations(WORK_PROGRESS_FILE, 'work_secs', work_factor)
     _initialize_study_duration(study_duration_minutes)

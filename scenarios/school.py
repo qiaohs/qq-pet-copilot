@@ -32,6 +32,7 @@ from src.ocr import ocr_texts
 from src.progress import (
     SCHOOL_PROGRESS_FILE,
     count_cross,
+    get_current_school,
     load_progress,
     log,
     log_history,
@@ -62,6 +63,10 @@ INSTITUTE_ATTRIBUTE_COURSES = {
     '智力': 'select_box_3',
 }
 ADVANCED_STAGES = ('高级学园', '进修学院')
+DEFAULT_CLASS_MINUTES = (45, 135)
+# 开课后通常能读到 44:xx / 02:14:xx；留出页面加载和收尾延迟，但不把
+# 中途接管的旧课程误判成本次新开的课程。
+CLASS_DURATION_TOLERANCE_SECONDS = 15 * 60
 # 面板标题识别规则（在选课页检测，页面只有一个学园标题，不需要靠编号/后缀防误判）：
 # - 初级/中级/高级学园：形如"初级学园 5年级"（年级可省略）
 # - 进修学院：形如"进修学院 研修生12" / "进修学院 研修生Ⅰ"，真实 OCR 常把编号
@@ -72,6 +77,28 @@ _STAGE_RE = re.compile(
     r'|(进修学院)(?:\s*研修生)?')
 
 PROGRESS_FILE = SCHOOL_PROGRESS_FILE
+
+
+def parse_duration_candidates(value) -> tuple[int, ...]:
+    """解析 ``45,135`` 一类候选配置；无有效值时回退内置候选。"""
+    try:
+        values = [int(part) for part in re.split(r'[,，;；\s]+', str(value).strip())
+                  if part]
+        values = list(dict.fromkeys(item for item in values if 1 <= item <= 1440))
+        return tuple(values) or DEFAULT_CLASS_MINUTES
+    except (TypeError, ValueError):
+        return DEFAULT_CLASS_MINUTES
+
+
+def infer_class_minutes(remaining_seconds: int | None,
+                        elapsed_seconds: float = 0,
+                        candidates: tuple[int, ...] = DEFAULT_CLASS_MINUTES) -> int | None:
+    """由“已经过 + 剩余”总时长近似匹配配置中的课程时长。"""
+    if remaining_seconds is None:
+        return None
+    estimated = max(0.0, float(remaining_seconds)) + max(0.0, float(elapsed_seconds))
+    nearest = min(candidates, key=lambda value: abs(value * 60 - estimated))
+    return nearest if abs(nearest * 60 - estimated) <= CLASS_DURATION_TOLERANCE_SECONDS else None
 
 
 class SchoolScenario(DeviceScenario):
@@ -87,10 +114,17 @@ class SchoolScenario(DeviceScenario):
         self.duration_minutes = int(self.cfg.school.duration_minutes)
         if not 1 <= self.duration_minutes <= 1440:
             raise ValueError('school.duration_minutes 必须在 1-1440 分钟之间')
+        self.duration_candidates = parse_duration_candidates(
+            getattr(self.cfg.school, 'duration_candidates', '45,135'))
         # 毕业处理防循环标志：关闭毕业面板后重新进学校仍出现毕业标志时抛异常，
         # 走重试链而不是无限"毕业->回主页面->再进"空转；成功看到 school_start 时重置
         self._graduated_once = False
-        log(f'属性点: {self.attribute}，每次学习: {self.duration_minutes} 分钟，'
+        self._class_started_at: float | None = None
+        self._class_duration_detected = False
+        self._detected_duration_minutes: int | None = None
+        log(f'属性点: {self.attribute}，学习时长候选: '
+            f'{"/".join(map(str, self.duration_candidates))} 分钟，'
+            f'识别失败兜底: {self.duration_minutes} 分钟，'
             f'每天学习次数: {self.times_per_day if self.times_per_day else "不限"}')
 
     # ---- 各阶段 ----
@@ -214,6 +248,7 @@ class SchoolScenario(DeviceScenario):
     def wait_class_end(self) -> bool:
         """等待下课并点击 quit。返回 True 表示还能继续学。"""
         self.wait_end('school_in', 'school_end', encourage=True)
+        self._detect_duration_from_elapsed()
         again = self.see('school_start')
         if again:
             log('还可以继续学习')
@@ -224,17 +259,63 @@ class SchoolScenario(DeviceScenario):
     def attend_class(self) -> bool:
         """选课 -> 开始学习 -> 等待下课 -> quit。返回 True 表示还能继续学。"""
         self.select_course()
+        self._class_started_at = time.monotonic()
+        self._class_duration_detected = False
+        self._detected_duration_minutes = None
         self.click_until_gone_or_see('school_start', 'school_in', '开始学习')
         log('已进入课堂，等待下课...')
+        self._detect_duration_from_remaining()
         if self.defer_wait:
             # 延时收尾：进行中登记 pending（到点由调度器 finish_pending 收尾）或
             # 已结束原地收尾，然后回主页面；计数统一走 on_finish（count_cross），
             # 本地 learned 不再自增，防止重复计数
             self.defer_busy_end('school_in', 'school_end',
-                                lambda: count_cross('school'), '上课', encourage=True)
+                                self._finish_deferred_class, '上课', encourage=True)
             self.ensure_main_page()
             return False
         return self.wait_class_end()
+
+    def _save_detected_duration(self, minutes: int, source: str) -> None:
+        """把本节识别出的实际时长写入会话元数据，供结算统计读取。"""
+        stage = get_current_school() or '未识别'
+        set_current_school(stage, minutes)
+        self._class_duration_detected = True
+        self._detected_duration_minutes = minutes
+        log(f'识别本节学习时长: {minutes} 分钟（{source}）')
+
+    def _detect_duration_from_remaining(self) -> int | None:
+        """开课后按剩余倒计时匹配配置中的学习时长候选。"""
+        for attempt in range(1, 4):
+            elapsed = max(0.0, time.monotonic() - (self._class_started_at or time.monotonic()))
+            remaining = self.read_remaining_seconds(self.screen())
+            minutes = infer_class_minutes(remaining, elapsed, self.duration_candidates)
+            if minutes is not None:
+                self._save_detected_duration(minutes, '开课倒计时')
+                return minutes
+            if remaining is not None:
+                log(f'学习剩余时间约 {remaining // 60} 分钟，未接近候选值 '
+                    f'{self.duration_candidates}，'
+                    '沿用配置兜底值')
+                return None
+            if attempt < 3:
+                time.sleep(CLICK_INTERVAL)
+        log(f'学习倒计时连续 3 次未识别，暂按配置的 {self.duration_minutes} 分钟记录')
+        return None
+
+    def _detect_duration_from_elapsed(self) -> int | None:
+        """倒计时 OCR 失败时，在本次课程结束后按实际经过时间兜底识别。"""
+        if self._class_duration_detected or self._class_started_at is None:
+            return self._detected_duration_minutes if self._class_duration_detected else None
+        elapsed = max(0.0, time.monotonic() - self._class_started_at)
+        minutes = infer_class_minutes(0, elapsed, self.duration_candidates)
+        if minutes is not None:
+            self._save_detected_duration(minutes, '开课至结算耗时')
+        return minutes
+
+    def _finish_deferred_class(self) -> None:
+        """延时收尾回调：先校准本节时长，再计数并累计学习分钟。"""
+        self._detect_duration_from_elapsed()
+        count_cross('school')
 
     def run(self, max_times: int | None = None, max_rounds: int = 0) -> bool:
         """max_times: 当天学习次数上限，0 表示不限；None 表示用配置值。

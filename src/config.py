@@ -92,8 +92,10 @@ class SchoolConfig:
     attribute: str = "力量"
     # 每天学习次数上限，0 为不限
     times_per_day: int = 0
-    # 每节课实际时长（分钟），用于统计和学习/打工总时长上限
+    # 自动识别失败时的每节课兜底时长（分钟）
     duration_minutes: int = 135
+    # 可能出现的课程时长，逗号分隔；开课倒计时/实际耗时取最接近的一项
+    duration_candidates: str = "45,135"
 
 
 @dataclass
@@ -313,7 +315,13 @@ class EmployedConfig:
 
 @dataclass
 class NotifyConfig:
-    # 场景多次重试仍失败时的告警：Windows 桌面 Toast 通知
+    # 被雇佣宠物由程序成功召回后通知
+    employed_recall: bool = True
+    # 需要人工介入的致命异常通知
+    critical_errors: bool = True
+    # 同类致命异常重复通知冷却（分钟），0 表示不去重
+    duplicate_cooldown_minutes: int = 360
+    # Windows 桌面 Toast 通知
     win_toast: bool = True
     # OnePush 推送配置（YAML，支持多行），如 {provider: bark, key: xxx}；留空不推送
     onepush_config: str = ""
@@ -327,6 +335,8 @@ class GuiConfig:
     mirror: bool = True
     # 日志框保留的最近行数；完整日志仍写入 runs/logs/ 当日日志文件
     log_max_lines: int = 500
+    # 手机画面锁头按钮发送的快捷短语；只存在本地 config.yaml，示例默认留空
+    shortcut_phrase: str = ""
 
 
 @dataclass

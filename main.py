@@ -25,8 +25,8 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -65,6 +65,7 @@ from qfluentwidgets import (
     Theme,
     TimeEdit,
     TransparentToolButton,
+    isDarkTheme,
     setTheme,
 )
 
@@ -146,6 +147,12 @@ class _RecoverSignals(QObject):
 
 class _ScreenshotSignals(QObject):
     """手动截图：后台线程 -> GUI 主线程，截图完成后恢复按钮。"""
+
+    finished = pyqtSignal(bool)
+
+
+class _ShortcutSignals(QObject):
+    """快捷短语 adb 输入：后台线程 -> GUI 主线程，完成后恢复按钮。"""
 
     finished = pyqtSignal(bool)
 
@@ -259,6 +266,7 @@ class _NoInsertEditableComboBox(EditableComboBox):
 SETTING_FIELDS = [
     ('gui.theme', '主题', ['跟随系统', '深色', '浅色']),
     ('gui.log_max_lines', '日志显示最近行数', 'int'),
+    ('gui.shortcut_phrase', '快捷短语（本地保存）', 'secret'),
     ('adb.path', 'adb 路径', 'str'),
     ('adb.device_serial', '设备序列号', 'devices'),
     ('control.method', '控制方案', ['injectInputEvent', 'minitouch']),
@@ -275,8 +283,11 @@ SETTING_FIELDS = [
     ('schedule.back_method', '返回方式', ['系统返回', '返回图标']),
     ('recover.method', '异常处理方式', ['重启设备', '重启游戏']),
     ('recover.emulator_restart_cmd', '模拟器重启命令（留空自动探测）', 'str'),
-    ('notify.win_toast', '失败告警 Windows 通知', 'bool'),
-    ('notify.onepush_config', '失败告警 OnePush 配置', 'text'),
+    ('notify.employed_recall', '被雇佣召回成功通知', 'bool'),
+    ('notify.critical_errors', '致命异常通知', 'bool'),
+    ('notify.duplicate_cooldown_minutes', '重复异常冷却（分钟）', 'int'),
+    ('notify.win_toast', 'Windows 通知', 'bool'),
+    ('notify.onepush_config', 'OnePush 配置（含 Bark）', 'text'),
 ]
 
 # 模拟器专用设置项：非模拟器模式在设置页隐藏
@@ -291,7 +302,8 @@ TASK_SETTING_FIELDS = [
     ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
     ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
-    ('school.duration_minutes', '每次学习时长（分钟）', 'int'),
+    ('school.duration_minutes', '学习时长识别失败兜底（分钟）', 'int'),
+    ('school.duration_candidates', '学习时长候选（逗号分隔）', 'str'),
     ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
     ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
     ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
@@ -621,24 +633,106 @@ class ScrcpyContainer(QWidget):
 
 
 class HoverOpacityToolButton(TransparentToolButton):
-    """默认半透明，鼠标移入后完整显示的画面悬浮按钮。"""
+    """带半透明底色，鼠标移入后完整显示的画面悬浮按钮。
+
+    scrcpy 是嵌入的原生 Windows 子窗口：Qt 的 QGraphicsOpacityEffect
+    只能和卡片背景合成，看不见原生子窗口的画面。Windows 下把按钮做成
+    归属于主窗口的无边框工具窗口，直接叠在 scrcpy HWND 上方；其他平台
+    才使用普通子控件和 Qt effect。
+    """
+
+    IDLE_OPACITY = 0.50
 
     def __init__(self, icon, parent=None):
         # qfluentwidgets 的 (icon, parent) 重载内部会再次调用 self.__init__；
         # 子类直接走该入口会递归回本构造器，因此先按 parent 初始化再设置图标。
         super().__init__(parent)
-        self.setIcon(icon)
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(0.55)
-        self.setGraphicsEffect(self._opacity_effect)
+        if icon is not None:
+            self.setIcon(icon)
+        self._opacity_effect = None
+        self._overlay_window = (
+            sys.platform == 'win32'
+            and QApplication.instance() is not None
+            and QApplication.platformName().lower() == 'windows'
+        )
+        if self._overlay_window:
+            # 普通 Qt 子控件即使设透明，也只能透出 Qt 卡片背景，无法透出
+            # 同区域内的原生 scrcpy HWND。带 owner 的 Tool 窗口不会出现在
+            # 任务栏，同时可真正与下方手机画面合成。
+            self.setWindowFlags(
+                Qt.WindowType.Tool
+                | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.NoDropShadowWindowHint
+                | Qt.WindowType.WindowDoesNotAcceptFocus
+            )
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            QTimer.singleShot(0, lambda: self._set_visual_opacity(self.IDLE_OPACITY))
+        else:
+            self._ensure_qt_opacity_effect()
+            self._opacity_effect.setOpacity(self.IDLE_OPACITY)
+
+    def _ensure_qt_opacity_effect(self) -> None:
+        if self._opacity_effect is None:
+            self._opacity_effect = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(self._opacity_effect)
+
+    def _set_visual_opacity(self, opacity: float) -> None:
+        opacity = max(0.0, min(1.0, float(opacity)))
+        if self._overlay_window:
+            self.setWindowOpacity(opacity)
+            return
+        self._ensure_qt_opacity_effect()
+        self._opacity_effect.setOpacity(opacity)
+
+    def paintEvent(self, event) -> None:
+        # TransparentToolButton 本身在非悬浮态没有底色，之前的
+        # opacity effect 实际只把图标变淡，看起来像“没有生效”。
+        # 先画一层实际的圆角背景，再由 effect 统一淡化底色+图标。
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if isDarkTheme():
+            background = QColor(28, 28, 28, 225)
+            border = QColor(255, 255, 255, 55)
+        else:
+            background = QColor(255, 255, 255, 235)
+            border = QColor(0, 0, 0, 45)
+        painter.setBrush(background)
+        painter.setPen(QPen(border, 1))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
+        painter.end()
+        super().paintEvent(event)
 
     def enterEvent(self, event) -> None:
-        self._opacity_effect.setOpacity(1.0)
+        self._set_visual_opacity(1.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        self._opacity_effect.setOpacity(0.55)
+        self._set_visual_opacity(self.IDLE_OPACITY)
         super().leaveEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # HWND 在 show 时可能被 Qt 重建，每次显示后重施加透明度。
+        QTimer.singleShot(0, lambda: self._set_visual_opacity(self.IDLE_OPACITY))
+
+
+class ShortcutPhraseToolButton(HoverOpacityToolButton):
+    """绘制锁头图标，避免依赖当前 Fluent 图标集里并不存在的 LOCK。"""
+
+    def __init__(self, parent=None):
+        super().__init__(None, parent)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(245, 245, 245) if isDarkTheme() else QColor(32, 32, 32)
+        painter.setPen(QPen(color, 2.2, Qt.PenStyle.SolidLine,
+                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(QRectF(12, 7, 12, 16), 0, 180 * 16)
+        painter.drawRoundedRect(QRectF(10, 16, 16, 13), 2.5, 2.5)
+        painter.end()
 
 
 def device_aspect() -> tuple[int, int] | None:
@@ -821,6 +915,9 @@ class MainWindow(MSFluentWindow):
         # 手动截图复用 GUI 的 u2 连接，后台保存，避免截图期间卡住界面。
         self._screenshot_signals = _ScreenshotSignals()
         self._screenshot_signals.finished.connect(self._set_screenshot_btn_enabled)
+        # 快捷短语按钮同样用 adb 后台执行，避免命令期间卡住 GUI。
+        self._shortcut_signals = _ShortcutSignals()
+        self._shortcut_signals.finished.connect(self._set_shortcut_btn_enabled)
 
         QTimer.singleShot(0, self._start_all)
 
@@ -932,6 +1029,10 @@ class MainWindow(MSFluentWindow):
         self._screen_capture_button.setFixedSize(36, 36)
         self._screen_capture_button.setToolTip('保存当前手机截图到 runs/screenshots')
         self._screen_capture_button.clicked.connect(self._capture_screen)
+        self._screen_phrase_button = ShortcutPhraseToolButton(self._screen_card)
+        self._screen_phrase_button.setFixedSize(36, 36)
+        self._screen_phrase_button.setToolTip('向当前输入框发送设置中的快捷短语')
+        self._screen_phrase_button.clicked.connect(self._input_shortcut_phrase)
         # 画面卡宽度 = 高度 × 画面比例（_fit_screen_card，窗口缩放/嵌入后重算），
         # 不用 QSplitter：把手在深色主题下会渲染成一条白色竖条，且宽度本就由
         # 高度推导，拖动没有意义
@@ -962,8 +1063,6 @@ class MainWindow(MSFluentWindow):
         card = getattr(self, '_screen_card', None)
         if card is None:
             return
-        button = getattr(self, '_screen_zoom_button', None)
-        capture_button = getattr(self, '_screen_capture_button', None)
         # 两种模式都让容器负责“完整画面等比适应”，始终禁用滚动条。
         self._screen_scroll.setWidgetResizable(False)
         self._screen_scroll.setHorizontalScrollBarPolicy(
@@ -995,13 +1094,42 @@ class MainWindow(MSFluentWindow):
                                           max(1, viewport.height()))
         else:
             self.scrcpy_view.setFixedSize(self.scrcpy_view.sizeHint())
-        if button:
-            button.move(10 + (capture_button.width() if capture_button else 36) + 6, 10)
-            button.raise_()
-        if capture_button:
-            capture_button.move(10, 10)
-            capture_button.raise_()
+        self._sync_screen_tool_buttons()
         self.scrcpy_view._fit()
+
+    def _screen_tool_buttons(self) -> tuple[QWidget, ...]:
+        """返回已创建的手机画面悬浮按钮，构造/关闭阶段也可安全调用。"""
+        return tuple(
+            button for button in (
+                getattr(self, '_screen_capture_button', None),
+                getattr(self, '_screen_zoom_button', None),
+                getattr(self, '_screen_phrase_button', None),
+            ) if button is not None
+        )
+
+    def _sync_screen_tool_buttons(self) -> None:
+        """定位并同步悬浮按钮可见性，使其只覆盖主页手机画面。"""
+        buttons = self._screen_tool_buttons()
+        if not buttons:
+            return
+        current = self.stackedWidget.currentWidget()
+        visible = (
+            self.isVisible()
+            and not self.isMinimized()
+            and current is not None
+            and current.objectName() == 'homePage'
+        )
+        card = getattr(self, '_screen_card', None)
+        for index, tool_button in enumerate(buttons):
+            if not visible or card is None:
+                tool_button.hide()
+                continue
+            offset = QPoint(10 + index * 42, 10)
+            # Windows 是独立 Tool 窗口，move 使用全局坐标；其他平台仍是
+            # card 子控件，使用局部坐标。
+            tool_button.move(card.mapToGlobal(offset) if tool_button.isWindow() else offset)
+            tool_button.show()
+            tool_button.raise_()
 
     def _toggle_screen_zoom(self) -> None:
         """在原始紧凑显示与左侧面板内等比适应之间切换。"""
@@ -1022,6 +1150,36 @@ class MainWindow(MSFluentWindow):
             self._screen_capture_button.setEnabled(enabled)
         except RuntimeError:
             pass
+
+    def _set_shortcut_btn_enabled(self, enabled: bool) -> None:
+        """adb 输入线程结束后恢复快捷短语按钮。"""
+        try:
+            self._screen_phrase_button.setEnabled(enabled)
+        except RuntimeError:
+            pass
+
+    def _input_shortcut_phrase(self) -> None:
+        """异步把本地配置的快捷短语发送到手机当前输入框。"""
+        phrase = str(load_config().gui.shortcut_phrase or '')
+        if not phrase:
+            log('快捷短语未配置，请先在设置页填写')
+            return
+        self._set_shortcut_btn_enabled(False)
+
+        def work() -> None:
+            try:
+                with self._test_lock:
+                    self._get_adb_dev().input_text(phrase)
+                log('已通过 adb 向当前输入框发送快捷短语')
+            except Exception as e:
+                log(f'adb 输入快捷短语失败: {e}')
+            finally:
+                try:
+                    self._shortcut_signals.finished.emit(True)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _capture_screen(self) -> None:
         """异步抓取手机原始画面并保存，不受 GUI 缩放状态影响。"""
@@ -1056,6 +1214,24 @@ class MainWindow(MSFluentWindow):
         super().resizeEvent(event)
         # 等布局算完再按新高度收宽度（resizeEvent 触发时 height 还是旧值）
         QTimer.singleShot(0, self._fit_screen_card)
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        QTimer.singleShot(0, self._sync_screen_tool_buttons)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._fit_screen_card)
+
+    def hideEvent(self, event) -> None:
+        for button in self._screen_tool_buttons():
+            button.hide()
+        super().hideEvent(event)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        # 最小化/还原时，独立工具窗口不会依靠布局事件自动同步。
+        QTimer.singleShot(0, self._sync_screen_tool_buttons)
 
     def _build_status_card(self) -> HeaderCardWidget:
         """宠物状态卡片：体力/清洁/心情/金币/饼干/香皂 横排一行均匀分布。"""
@@ -1876,8 +2052,13 @@ class MainWindow(MSFluentWindow):
                     w.currentTextChanged.connect(self._on_care_method_changed)
         else:
             w = LineEdit()
+            if kind == 'secret':
+                # 快捷短语可能是密码：编辑时可见，失焦后自动遮挡；明文只保存在
+                # 已被 Git 忽略的本地 config.yaml 中。
+                w.setEchoMode(LineEdit.EchoMode.PasswordEchoOnEdit)
+                w.setPlaceholderText('仅保存在本机 config.yaml')
             # 时间类字段：格式提示不占标签宽度，放在 placeholder 里
-            if key.endswith('.start_time'):
+            elif key.endswith('.start_time'):
                 w.setPlaceholderText('HH:MM')
             elif key.endswith('.time_range'):
                 w.setPlaceholderText('HH:MM-HH:MM（结束早于开始视为跨零点）')
@@ -2026,6 +2207,7 @@ class MainWindow(MSFluentWindow):
         w = self.stackedWidget.widget(index)
         if w is not None and w.objectName() in ('tasksPage', 'settingsPage'):
             self.load_settings()
+        QTimer.singleShot(0, self._sync_screen_tool_buttons)
 
     def _on_care_method_changed(self, method: str) -> None:
         """护理方式选"一键护理"时隐藏体力/清洁阈值行（不读状态，阈值用不上）。"""
@@ -2036,10 +2218,10 @@ class MainWindow(MSFluentWindow):
 
     def _test_notify(self) -> None:
         """设置页"通知测试"按钮：发一条测试告警，各渠道结果打到日志页。"""
-        from src.notify import send_alert  # 按需导入（winotify/onepush 均为懒加载）
+        from src.notify import send_test_notification  # 按需导入（通知库均懒加载）
 
         log('发送通知测试...')
-        sent = send_alert('通知测试：收到这条说明告警渠道配置正常')
+        sent = send_test_notification('通知测试：收到这条说明通知渠道配置正常')
         log('通知测试已送达' if sent else '通知测试未送达（检查配置，各渠道详情见上方日志）')
 
     # ---- 检查更新 ----
@@ -2372,7 +2554,9 @@ class MainWindow(MSFluentWindow):
             value = w.text().strip()
         ok, fixed = settings_io.validate_field(key, value)
         if not ok:
-            log(f'配置 {key} 的值 {value!r} 无效，已恢复默认值 {fixed!r}')
+            shown_value = '******' if kind == 'secret' else repr(value)
+            shown_fixed = '******' if kind == 'secret' else repr(fixed)
+            log(f'配置 {key} 的值 {shown_value} 无效，已恢复默认值 {shown_fixed}')
             w.blockSignals(True)  # 恢复默认值不再触发一次保存
             if kind == 'devices':
                 idx = w.findData(fixed)
@@ -2403,7 +2587,8 @@ class MainWindow(MSFluentWindow):
         except Exception as e:
             log(f'保存配置失败: {e}')
             return
-        log(f'配置已保存: {key} = {fixed}')
+        shown_fixed = '******' if kind == 'secret' else fixed
+        log(f'配置已保存: {key} = {shown_fixed}')
         if key == 'gui.theme':
             # 主题即时切换（qfluentwidgets 支持运行时 setTheme），无需重启
             setTheme(THEME_MAP.get(str(fixed), Theme.AUTO))
@@ -2611,6 +2796,8 @@ class MainWindow(MSFluentWindow):
     # ---- 退出 ----
 
     def closeEvent(self, event) -> None:
+        for button in self._screen_tool_buttons():
+            button.hide()
         if self._runner_proc and self._runner_proc.poll() is None:
             self._runner_proc.terminate()
         # 只结束由本程序拉起的 scrcpy

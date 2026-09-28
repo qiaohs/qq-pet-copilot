@@ -110,6 +110,16 @@ class Device:
             raise AdbError("adb 截图未返回有效 PNG 数据")
         return data
 
+    def input_text(self, text: str) -> None:
+        """通过 adb shell input text 向当前聚焦输入框发送文本。"""
+        self.ensure_connected()
+        try:
+            self._run("shell", "input", "text", str(text))
+        except AdbError:
+            # _run 的通用异常会包含完整命令；快捷短语可能是密码，禁止把它
+            # 带进 GUI/文件日志。
+            raise AdbError("adb 快捷短语输入失败") from None
+
     def reboot_and_wait(self, timeout: float = 180.0, interval: float = 5.0) -> None:
         """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。"""
         self._run("reboot")

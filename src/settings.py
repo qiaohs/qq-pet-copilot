@@ -22,6 +22,7 @@ DEFAULTS = {
     'gui.theme': '跟随系统',
     'gui.mirror': True,
     'gui.log_max_lines': 500,
+    'gui.shortcut_phrase': '',
     'control.method': 'injectInputEvent',
     'emulator.type': 'auto',
     'emulator.name': '',
@@ -30,6 +31,7 @@ DEFAULTS = {
     'school.attribute': '力量',
     'school.times_per_day': 0,
     'school.duration_minutes': 135,
+    'school.duration_candidates': '45,135',
     'work.location': '风铃旅社',
     'work.times_per_day': 0,
     'work.employ_scroll_limit': 5,
@@ -82,6 +84,9 @@ DEFAULTS = {
     'employed.interval_seconds': 60,
     'employed.action': '等到25/75（小于45min）',
     'recover.emulator_restart_cmd': '',
+    'notify.employed_recall': True,
+    'notify.critical_errors': True,
+    'notify.duplicate_cooldown_minutes': 360,
     'notify.win_toast': True,
     'notify.onepush_config': '',
 }
@@ -104,6 +109,16 @@ def validate_field(key: str, value):
     if key == 'school.duration_minutes':
         try:
             return (True, int(value)) if 1 <= int(value) <= 1440 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key == 'school.duration_candidates':
+        import re
+        try:
+            values = [int(part) for part in re.split(r'[,，;；\s]+', str(value).strip())
+                      if part]
+            if not values or any(item < 1 or item > 1440 for item in values):
+                return False, default
+            return True, ','.join(str(item) for item in dict.fromkeys(values))
         except (TypeError, ValueError):
             return False, default
     if key == 'work.duration':
@@ -198,7 +213,8 @@ def validate_field(key: str, value):
             return (True, value) if int(value) >= 1 else (False, default)
         except (TypeError, ValueError):
             return False, default
-    if key == 'notify.win_toast' or key == 'adventure.skip_bad_weather' \
+    if key in ('notify.win_toast', 'notify.employed_recall', 'notify.critical_errors') \
+            or key == 'adventure.skip_bad_weather' \
             or key == 'emulator.device_spoof' or key == 'gui.mirror':
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'notify.onepush_config':
