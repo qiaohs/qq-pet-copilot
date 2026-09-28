@@ -17,7 +17,7 @@
   低于 care 阈值则喂食/洗澡到达标
 - 冒险优先：当天到达 adventure.start_time 且冒险次数未满（adventure.times_per_day）
   -> 优先处理冒险，每次冒险后回主页面重新判断；当天次数用完后等第二天该时间再冒险
-- 学习工作时长规则：学习按学园（初级10/中级20/高级150/进修45 分钟）、
+- 学习工作时长规则：学习按 school.duration_minutes（默认135分钟）、
   打工按所选时长（10分钟/45分钟/2小时）结算累计，累计 >= daily_hour_limit（小时）
   后今天不再学习只打工，第二天自动清零
 - 每轮先在主页面 OCR 金币数量（顶部状态栏最右侧数值）
@@ -200,6 +200,7 @@ class Runner:
         # 旧版点数系数：仅首次运行把老进度次数换算成时长用（不再参与调度）
         self.school_factor = sched.school_factor
         self.work_factor = sched.work_factor
+        self.school_duration_minutes = self.school.duration_minutes
         adv = self.school.cfg.adventure
         self.adventure_times = adv.times_per_day
         start_time = adv.start_time
@@ -213,7 +214,7 @@ class Runner:
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
         log(f'金币阈值: {self.threshold}，'
             f'学习工作时长上限: {self.daily_hour_limit if self.daily_hour_limit else "不限"} 小时'
-            f'（学习按学园 10/20/150/45 分钟、打工按所选时长结算），'
+            f'（每次学习 {self.school_duration_minutes} 分钟、打工按所选时长结算），'
             f'冒险: 每天 {self.adventure_times} 次 @ {start_time}')
         visit = self.school.cfg.visit
         self.visit_times = int(visit.continuous_target)
@@ -265,10 +266,13 @@ class Runner:
         return last is None or datetime.now() >= last + timedelta(seconds=interval)
 
     def friend_care_due(self) -> bool:
-        """是否该好友护理了：已启用、配置了好友名称、当前时间在时间段内、
+        """是否该好友护理了：已启用且配置好友名称或开启好友福袋、当前在时间段内、
         距上次巡检已过 friend_care.interval_seconds 且不在失败延后期。"""
         fc = self.friend_care.cfg.friend_care
-        if not fc.enabled or not fc.friend_name.strip() or self._deferred('好友护理'):
+        bag_enabled = bool(getattr(getattr(self.friend_care.cfg, 'lucky_bag', None),
+                                   'friend_enabled', True))
+        if (not fc.enabled or (not fc.friend_name.strip() and not bag_enabled)
+                or self._deferred('好友护理')):
             return False
         last = getattr(self.friend_care, 'last_care_at', None)
         interval = max(0, int(getattr(fc, 'interval_seconds', 1800) or 0))
@@ -350,7 +354,8 @@ class Runner:
 
     def _load_durations(self) -> tuple[int, int]:
         """读取今日累计时长（带旧版系数迁移）。"""
-        return load_durations(self.school_factor, self.work_factor)
+        return load_durations(self.school_factor, self.work_factor,
+                              self.school_duration_minutes)
 
     def _duration_over(self, study_s: int, work_s: int) -> bool:
         """学习+工作时长是否已达上限（daily_hour_limit，0=不限）。"""
@@ -533,6 +538,8 @@ class Runner:
             scen.dev.control_method = cfg.control.method
             # 被雇佣配置整体替换（开关/时间段/检查间隔/处理方式下一轮即生效）
             scen.cfg.employed = cfg.employed
+            scen.cfg.friend_navigation = cfg.friend_navigation
+            scen.cfg.lucky_bag = cfg.lucky_bag
             scen.cfg.recover.method = cfg.recover.method
             scen.cfg.recover.emulator_restart_cmd = cfg.recover.emulator_restart_cmd
             scen.cfg.emulator = cfg.emulator
@@ -566,6 +573,16 @@ class Runner:
         # care.interval_seconds 热加载（care_due 读 self.care.cfg.care.interval_seconds）
         self.care.cfg.care = cfg.care
         self.school.times_per_day = cfg.school.times_per_day
+        try:
+            duration_minutes = int(cfg.school.duration_minutes)
+        except (TypeError, ValueError):
+            duration_minutes = 0
+        if 1 <= duration_minutes <= 1440:
+            self.school.duration_minutes = duration_minutes
+            self.school_duration_minutes = duration_minutes
+        else:
+            log(f'学习时长配置无效 {cfg.school.duration_minutes!r}，'
+                f'沿用 {self.school_duration_minutes} 分钟')
         if cfg.school.attribute in ATTRIBUTE_COURSES:
             self.school.attribute = cfg.school.attribute
         else:

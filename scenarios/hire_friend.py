@@ -52,6 +52,7 @@ from src.progress import (
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, TaskDeferred
 from scenarios.friend_care import FriendCareScenario
+from scenarios.friend_features import is_non_friend_page
 from scenarios.work import DURATION_BOXES, WorkScenario
 
 PROGRESS_FILE = HIRE_FRIEND_PROGRESS_FILE
@@ -232,8 +233,13 @@ class FriendHireScenario(FriendCareScenario):
             log('未配置雇佣好友名称，跳过好友雇佣')
             return False
         scan_limit = int(getattr(hf, 'max_scan_count', 20))
+        nav = getattr(self.cfg, 'friend_navigation', None)
+        stop_at_non_friend = bool(getattr(nav, 'stop_at_non_friend', True))
+        min_scan_count = int(getattr(nav, 'min_scan_count', 10))
         if scan_limit < 1:
             raise ValueError('hire_friend.max_scan_count 必须大于 0')
+        if min_scan_count < 1:
+            raise ValueError('friend_navigation.min_scan_count 必须大于 0')
         log('雇佣好友候选: ' + ', '.join(names))
         if max_times is None:
             max_times = hf.times_per_day
@@ -268,8 +274,18 @@ class FriendHireScenario(FriendCareScenario):
             while True:
                 desc, visible = self.current_friend()
                 scanned += 1
-                name = next((candidate for candidate in names
-                             if candidate not in seen_targets and candidate in desc), None)
+                non_friend = False
+                if stop_at_non_friend:
+                    non_friend = is_non_friend_page(self.screen())
+                if non_friend and scanned >= min_scan_count:
+                    log(f'雇佣好友已遍历 {scanned} 位并进入非好友区，结束本轮查找')
+                    break
+                if non_friend:
+                    log(f'第 {scanned} 位不是好友，跳过雇佣；'
+                        f'未到最少遍历数 {min_scan_count}，继续')
+                name = None if non_friend else next((candidate for candidate in names
+                                                      if candidate not in seen_targets
+                                                      and candidate in desc), None)
                 if name is not None:
                     seen_targets.add(name)
                     log(f'列表遇到雇佣候选: {desc}（配置名 {name}）')

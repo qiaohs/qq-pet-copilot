@@ -4,7 +4,7 @@ runs/*_progress.json（学习/打工/冒险/踩踩/PK/被雇佣/雇佣好友/经
 统一走本模块，保证：
 
 - **跨天规整**：旧日期的当天次数归档进 history，并清掉旧日期的累计时长
-  （study_secs/work_secs）与当天计数（learned）；school/duration 是"当前会话"
+  （study_secs/work_secs）与当天计数（learned）；school/duration_minutes/duration 是"当前会话"
   元数据——昨晚开始的打工/上课今天收尾时，结算要靠它把时长累计到今天，所以
   不随跨天清零，由 get_daily_field 按 date==今天 门控。
 - **原子写入**：先写 <文件>.tmp 再 os.replace 覆盖，进程被杀/崩溃不会留下
@@ -81,7 +81,7 @@ def normalize(data: dict) -> tuple[dict, bool]:
     """把进度数据规整到"今天"，返回 (data, 是否跨天)。
 
     跨天时：旧日期当天次数归档进 history（不覆盖已有条目）、清零 learned、
-    清掉旧日期的累计时长（study_secs/work_secs）。school/duration 保留
+    清掉旧日期的累计时长（study_secs/work_secs）。school/duration_minutes/duration 保留
     （会话元数据，见模块 docstring）。同一天原样返回。
     """
     today = today_str()
@@ -151,7 +151,7 @@ def increment_daily(path: Path) -> int:
 
 
 def get_daily_field(path: Path, key: str) -> Any | None:
-    """读取当天才有效的扩展字段（如 school/duration）；文件日期不是今天返回 None。"""
+    """读取当天才有效的扩展字段（如 school/duration_minutes）；非今天返回 None。"""
     data = read_raw(path)
     if data.get('date') == today_str():
         return data.get(key)
@@ -161,10 +161,19 @@ def get_daily_field(path: Path, key: str) -> Any | None:
 def set_daily_field(path: Path, key: str, value) -> None:
     """写入扩展字段：跨天时先规整（清旧时长、归档）并**总是落盘**推进日期，
     否则只在值变化时写（减少落盘）。"""
+    set_daily_fields(path, {key: value})
+
+
+def set_daily_fields(path: Path, values: dict[str, Any]) -> None:
+    """一次原子更新多个扩展字段，避免会话元数据只写入一半。"""
     data = read_raw(path)
     data, day_changed = normalize(data)
-    if day_changed or data.get(key) != value:
-        data[key] = value
+    changed = day_changed
+    for key, value in values.items():
+        if data.get(key) != value:
+            data[key] = value
+            changed = True
+    if changed:
         write_raw(path, data)
 
 

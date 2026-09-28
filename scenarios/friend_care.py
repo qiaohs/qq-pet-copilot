@@ -6,11 +6,12 @@
 3. 按护理好友方式（friend_care.method，选项同 care.method）逐个护理：
    - ocr检测：展开好友状态面板读体力/清洁，分别护理到配置目标值
    - 一键护理：好友页有一键护理按钮就点（含"支付并护理"确认），没有视为状态正常跳过
-4. 整轮只打开一次好友页，沿列表走一遍；名单内好友处理完或列表结束后统一返回主页。
+4. 整轮只打开一次好友页，沿列表走一遍；可顺带领取好友福袋，进入非好友区后停止。
 
 配置（config.yaml 的 friend_care 段）：enabled 开关 / time_range 时间段（HH:MM-HH:MM）/
 friend_name 护理好友名称（多个用中英文逗号分隔）/ method 护理好友方式 /
 max_scan_count 每轮最多遍历好友数 / interval_seconds 调度间隔（秒）。
+公共 friend_navigation 配置非好友停止与最少遍历数；lucky_bag.friend_enabled 控制好友福袋。
 
 运行：python scenarios/friend_care.py            （Ctrl+C 停止）
 """
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
 from scenarios.care import CARE_METHODS, ONE_CLICK_PAY_RETRIES, CareScenario
+from scenarios.friend_features import claim_lucky_bag, is_non_friend_page
 from scenarios.visit import VisitScenario
 
 MAX_FRIEND_SWITCHES = 30  # 查找/切回目标好友时最多切换次数（防无限切换）
@@ -204,9 +206,14 @@ class FriendCareScenario(VisitScenario):
             log('好友护理未启用，跳过')
             return False
         names = parse_friend_names(fc.friend_name)
-        if not names:
+        bag_enabled = bool(getattr(getattr(self.cfg, 'lucky_bag', None),
+                                   'friend_enabled', True))
+        if not names and not bag_enabled:
             log('未配置护理好友名称，跳过好友护理')
             return False
+        nav = getattr(self.cfg, 'friend_navigation', None)
+        stop_at_non_friend = bool(getattr(nav, 'stop_at_non_friend', True))
+        min_scan_count = int(getattr(nav, 'min_scan_count', 10))
         self.method = fc.method
         if self.method not in CARE_METHODS:
             raise ValueError(
@@ -219,13 +226,18 @@ class FriendCareScenario(VisitScenario):
             raise ValueError('friend_care.energy_target / clean_target 必须在 0-100 之间')
         if scan_limit < 1:
             raise ValueError('friend_care.max_scan_count 必须大于 0')
+        if min_scan_count < 1:
+            raise ValueError('friend_navigation.min_scan_count 必须大于 0')
         start, end = parse_time_range(fc.time_range)
         if not in_time_range(datetime.now().time(), start, end):
             log(f'当前不在好友护理时间段 {fc.time_range} 内，跳过')
             return False
-        log(f'好友护理开始: 好友={", ".join(names)}，方式={self.method}，'
+        log(f'好友护理开始: 好友={", ".join(names) or "未配置（仅巡检福袋）"}，方式={self.method}，'
             f'喂食目标={self.energy_target}，洗澡目标={self.clean_target}，'
-            f'时间段={fc.time_range}；按好友列表顺序单次遍历，最多 {scan_limit} 位')
+            f'时间段={fc.time_range}；按好友列表顺序单次遍历，最多 {scan_limit} 位，'
+            f'好友福袋={"开启" if bag_enabled else "关闭"}，'
+            f'非好友停止={"开启" if stop_at_non_friend else "关闭"}'
+            f'（至少遍历 {min_scan_count} 位）')
         cared_any = False
         checked = 0
         failures = []
@@ -238,8 +250,23 @@ class FriendCareScenario(VisitScenario):
             while True:
                 desc, visible = self.current_friend()
                 scanned += 1
-                matched = next((name for name in names
-                                if name not in handled and name in desc), None)
+                screen = None
+                non_friend = False
+                # 福袋只能领取好友的；开启福袋时即使关闭“遇非好友停止”，也要识别后跳过。
+                if stop_at_non_friend or bag_enabled:
+                    screen = self.screen()
+                    non_friend = is_non_friend_page(screen)
+                if non_friend and stop_at_non_friend and scanned >= min_scan_count:
+                    log(f'好友护理已遍历 {scanned} 位并进入非好友区，结束本轮查找')
+                    break
+                if non_friend:
+                    log(f'第 {scanned} 位不是好友，跳过福袋与护理'
+                        + (f'；未到最少遍历数 {min_scan_count}，继续' if stop_at_non_friend else ''))
+                elif bag_enabled:
+                    claim_lucky_bag(self, '好友', screen)
+
+                matched = None if non_friend else next((name for name in names
+                                                         if name not in handled and name in desc), None)
                 if matched is not None:
                     handled.add(matched)
                     cared = False
@@ -261,7 +288,8 @@ class FriendCareScenario(VisitScenario):
                     else:
                         failures.append((matched, last_error))
                         log(f'好友 {matched} 多次尝试仍失败，继续遍历下一位')
-                if len(handled) >= len(names):
+                # 开启好友福袋后要继续走到好友区末尾；否则配置名单处理完即可结束。
+                if names and len(handled) >= len(names) and not bag_enabled:
                     break
                 if scanned >= scan_limit:
                     log(f'好友护理已遍历 {scanned} 位，达到设置上限，结束本轮查找')
@@ -277,8 +305,10 @@ class FriendCareScenario(VisitScenario):
         if checked == 0 and failures:
             details = '；'.join(f'{name}: {error}' for name, error in failures)
             raise RuntimeError(f'所有护理好友均巡检失败：{details}')
-        if checked == 0 and not handled:
+        if names and checked == 0 and not handled:
             log('本轮遍历范围内未找到已配置的护理好友，按“找到几个算几个”正常结束')
+        elif not names:
+            log('本轮仅执行好友福袋巡检，未配置护理名单')
         if failures:
             log('好友护理部分失败: ' + '、'.join(name for name, _ in failures))
         log(f'好友护理巡检完成: 遍历 {scanned}/{scan_limit} 位，成功 {checked}/{len(names)} 位'

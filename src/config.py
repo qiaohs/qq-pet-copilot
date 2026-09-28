@@ -92,6 +92,8 @@ class SchoolConfig:
     attribute: str = "力量"
     # 每天学习次数上限，0 为不限
     times_per_day: int = 0
+    # 每节课实际时长（分钟），用于统计和学习/打工总时长上限
+    duration_minutes: int = 135
 
 
 @dataclass
@@ -112,7 +114,7 @@ class WorkConfig:
 class ScheduleConfig:
     # 金币阈值：金币 >= 该值优先学习，低于则先打工赚够再学习
     coin_threshold: int = 2000
-    # 学习工作时长上限（小时）：学习/打工按学园/打工时长结算累计，
+    # 学习工作时长上限（小时）：学习按手动时长、打工按所选时长结算累计，
     # 累计时长 >= 上限后今天不再学习只打工；0 = 不限
     daily_hour_limit: int = 8
     # 旧版字段（仅兼容老 config.yaml + 首次运行迁移用，不再参与调度、不进设置页）：
@@ -214,6 +216,22 @@ class HireFriendConfig:
     max_scan_count: int = 20
     # 每天雇佣好友次数，0 为不雇佣
     times_per_day: int = 8
+
+
+@dataclass
+class FriendNavigationConfig:
+    # 好友任务遇到顶部“加好友”时，把它视为好友列表结束
+    stop_at_non_friend: bool = True
+    # 防止页面尚未加载/OCR 偶发误识别导致过早停止；至少遍历此人数后才允许停止
+    min_scan_count: int = 10
+
+
+@dataclass
+class LuckyBagConfig:
+    # 护理自己时顺带检测并领取自己的福袋
+    self_enabled: bool = True
+    # 好友护理遍历时顺带检测并领取好友福袋；好友护理关闭时不会单独调度
+    friend_enabled: bool = True
 
 
 # 任务队列调度的任务键（tasks.order 里可配置的任务名）
@@ -326,6 +344,8 @@ class Config:
     pk: PkConfig = field(default_factory=PkConfig)
     friend_care: FriendCareConfig = field(default_factory=FriendCareConfig)
     hire_friend: HireFriendConfig = field(default_factory=HireFriendConfig)
+    friend_navigation: FriendNavigationConfig = field(default_factory=FriendNavigationConfig)
+    lucky_bag: LuckyBagConfig = field(default_factory=LuckyBagConfig)
     employed: EmployedConfig = field(default_factory=EmployedConfig)
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     tasks: TasksConfig = field(default_factory=TasksConfig)
@@ -408,6 +428,12 @@ def load_config(config_path: str | Path | None = None) -> Config:
         hire_friend=HireFriendConfig(
             **{k: v for k, v in (raw.get("hire_friend", {}) or {}).items()
                if k in HireFriendConfig.__dataclass_fields__}),
+        friend_navigation=FriendNavigationConfig(
+            **{k: v for k, v in (raw.get("friend_navigation", {}) or {}).items()
+               if k in FriendNavigationConfig.__dataclass_fields__}),
+        lucky_bag=LuckyBagConfig(
+            **{k: v for k, v in (raw.get("lucky_bag", {}) or {}).items()
+               if k in LuckyBagConfig.__dataclass_fields__}),
         employed=EmployedConfig(**raw.get("employed", {})),
         runner=RunnerConfig(**{k: v for k, v in (raw.get("runner", {}) or {}).items()
                                if k in RunnerConfig.__dataclass_fields__}),

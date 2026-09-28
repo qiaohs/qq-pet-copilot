@@ -29,6 +29,7 @@ DEFAULTS = {
     'emulator.device_spoof': False,
     'school.attribute': '力量',
     'school.times_per_day': 0,
+    'school.duration_minutes': 135,
     'work.location': '风铃旅社',
     'work.times_per_day': 0,
     'work.employ_scroll_limit': 5,
@@ -63,6 +64,10 @@ DEFAULTS = {
     'hire_friend.friend_name': '',
     'hire_friend.max_scan_count': 20,
     'hire_friend.times_per_day': 8,
+    'friend_navigation.stop_at_non_friend': True,
+    'friend_navigation.min_scan_count': 10,
+    'lucky_bag.self_enabled': True,
+    'lucky_bag.friend_enabled': True,
     'runner.engine': 'task_queue',
     'tasks.order': 'care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work',
     'tasks.main_order': 'school>hire_friend>adventure>work',
@@ -96,6 +101,11 @@ def validate_field(key: str, value):
         return (True, value) if value in WORK_LOCATIONS else (False, default)
     if key == 'school.attribute':
         return (True, value) if value in ('力量', '智力', '魅力') else (False, default)
+    if key == 'school.duration_minutes':
+        try:
+            return (True, int(value)) if 1 <= int(value) <= 1440 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
     if key == 'work.duration':
         return (True, value) if value in ('10分钟', '45分钟', '2小时') else (False, default)
     if key == 'adventure.type':
@@ -113,7 +123,9 @@ def validate_field(key: str, value):
             return False, DoubleQuotedScalarString(str(default))
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
-    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled'):
+    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
+               'friend_navigation.stop_at_non_friend', 'lucky_bag.self_enabled',
+               'lucky_bag.friend_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)
     if key == 'runner.engine':
         return (True, value) if value in ('task_queue', 'legacy') else (False, default)
@@ -146,6 +158,11 @@ def validate_field(key: str, value):
                'friend_care.energy_target', 'friend_care.clean_target'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
     if key in ('friend_care.max_scan_count', 'hire_friend.max_scan_count'):
+        try:
+            return (True, int(value)) if 1 <= int(value) <= 999 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key == 'friend_navigation.min_scan_count':
         try:
             return (True, int(value)) if 1 <= int(value) <= 999 else (False, default)
         except (TypeError, ValueError):

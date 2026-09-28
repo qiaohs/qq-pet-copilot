@@ -48,6 +48,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `src/stats_chart.py` | 统计页：各任务近 N 天次数的平滑折线图（QPainter 自绘 + Catmull-Rom 平滑，数据来自 `runs/*_progress.json` 的 history）；坐标轴文字/网格颜色跟随 Fluent 明暗主题（`_text_color()`/`_grid_color()` 读 `isDarkTheme()`，自绘不吃样式表） |
 | `scenarios/runner.py` | 统一调度器，两种引擎（`runner.engine`）：`task_queue`（默认，`TaskQueueRunner`：执行顺序由 `tasks.order` 配置，> 分隔越靠前越优先，不在 order 里不调度；每任务独立 enabled / trigger（interval 间隔 / daily 每日时间点窗口）/ enabled_time_range / success_interval / failure_interval，见 `tasks` 段）/ `legacy`（`Runner.run` 老主循环，顺序写死：护理 → 冒险 → 踩踩 → PK → 好友雇佣 → 好友护理 → 学习/打工）。共通：场景异常分级重试（回主页面重进 → `recover()` 重启恢复）；都失败时主任务（学习/打工）发告警通知（`src/notify.py`）并退出，支线任务延后重试（legacy 用 `SIDE_TASK_RETRY_DELAY`，队列用各任务 `failure_interval`） |
 | `scenarios/school.py` `work.py` `adventure.py` `care.py` `visit.py` `pk.py` `friend_care.py` `hire_friend.py` `employed.py` | 各场景，均继承 `DeviceScenario`（`pk.py`/`friend_care.py` 继承 `visit.py` 复用好友导航；`hire_friend.py` 继承 `friend_care.py` 复用指定好友导航；`employed.py` 只做被雇佣检测，召回复用基类） |
+| `scenarios/friend_features.py` | 好友页公共视觉识别：顶部 OCR“加好友”判非好友；左下固定比例 ROI 用 HSV 连通域区分未领取（金色动态光晕，面积和纵向高度双阈值，排除暖色地板/宠物窝）/已领取（白袋）/无福袋。领取后只点左侧阴影关闭可能出现的详情弹窗，禁止用返回键。 |
 | `src/scenario.py` | 场景基类：截图/u2+OCR 定位点击/回主页面/等待结束（阻塞 `wait_end` / 非阻塞延时收尾 `defer_busy_end`+`finish_pending`，OCR 剩余时间登记 `pending`）/被雇佣召回/四种进行中状态检测 |
 | `src/recover.py` | 异常恢复链路：adb reboot → 等开机 → 启动 QQ → **先试官方 scheme 直开宠物主页**（`mqqapi://qpet/open`，JumpActivity 零点击零权限，`SCHEME_TRY_ROUNDS`=2 轮，平板身份 `ro.build.characteristics` 含 tablet 会被告门禁拦、跳过直开）→ 失败回退点 `Q宠-*` 入口（descriptionStartsWith 前缀匹配，后缀数字不固定；入口紧凑双击用 minitouch 两连击——`d.click` JSON-RPC 往返慢，0.3s 间隔会被识别成两次单击进单击页，点不进主页 back 退回重试）回宠物页，返回新 U2Device；模拟器模式"重启设备"改为重启模拟器整机（MuMu 不支持 adb reboot，会把 adb 服务卡死；**opener 失败但设备在线时先强停 QQ 重开一次**——冷启动 QQ 首启失败比整机重启便宜得多），优先级：配置的 `recover.emulator_restart_cmd` > 留空自动探测模拟器实例分步停/启（`src/emulator.py`，serial 匹配多个实例时依次用 `emulator.type/name/path`、端口实际监听进程命令行消歧）> 回退 adb reboot，随后 connect → 等开机（`_adb_back_online` **不默认 kill-server**——kill-server 会把所有设备（其它模拟器实例/USB 真机）踢下线且 host:port 不会自动恢复，只在 connect **连续 `CONNECT_TIMEOUT_KILL_AFTER`=3 次**超时（服务疑似卡死，单次/偶发超时只是开机慢）才 kill-server 兜底并恢复之前在线过的所有远程设备）；`launch_emulator_if_offline(adb, emulator_cfg)` 启动时目标设备不在线则自动探测并**启动**所属实例（只启动不重启，等开机完成；探测不到返回 False 由调用方按原逻辑报错）——模拟器模式下 GUI `_start_all`（后台线程，设备上线后 scrcpy 看门狗自动重拉）与 `Runner.__init__`（U2Device 连接前）都会调用 |
 | `src/emulator.py` | 多模拟器实例自动探测（参考 ALAS module/device/platform）：MuMu 12/6/X、雷电 3/4/9、夜神、蓝叠 4/5、逍遥；exe→类型靠 `path_to_type`（exe 名+上级目录名），安装目录来源 = 卸载项注册表（子键名精确匹配）+ MuiCache/UserAssist（ROT13）+ 雷电 InstallDir 注册表；serial 算法 = vbox/nemu/memu 的 hostport→5555 转发正则（MuMu12 兜底 16384+32*index、雷电 5555+2*index、蓝叠4 固定 5555、蓝叠5 读 bluestacks.conf）；`scan_serials()`（GUI 设备下拉合并）、`find_instance(serial, type/name/path 消歧)`、`get_serial_pair()`（127.0.0.1:5555+X ↔ emulator-5554+X）、`restart_instance()` 按类型分步停/启 = stop 半边 + `launch_instance()`（仅启动半边，设备未运行时拉起用——模拟器模式启动链路 `launch_emulator_if_offline`，见 recover 行）（有控制台 exe 走控制台：MuMuManager/ldconsole/bsconsole/memuc，蓝叠5/MuMu6/X 杀进程再用主 exe 拉起）；serial 命中多个实例且配置消歧不够时，按端口实际监听进程命令行反查（`_match_by_listener`：MuMu12 每个实例的 .nemu 都转发 7555，MuMuVMMHeadless.exe 的 --comment 即实例名，0.0.0.0 通配与 127.0.0.1 精确绑定并存时精确绑定优先） |
@@ -56,7 +57,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 | `src/adb/device.py` | adb 封装：设备在线管理（start-server）、屏幕尺寸读取（scrcpy 嵌入比例用）、`reboot_and_wait()` / `launch_app()`（异常恢复用） |
 | `src/ocr.py` / `src/coins.py` | RapidOCR 封装；主页金币 = 顶部状态栏最右侧数值（按屏幕高度比例只裁剪顶部栏 OCR） |
 | `src/version.py` / `src/update_checker.py` | 版本常量（`APP_VERSION`/`APP_GITHUB_REPO`，release 工作流打包前由 `tools/write_version.py --tag <tag> --repo <owner/repo>` 写入）；GitHub `releases/latest` 更新检查（纯 stdlib urllib，版本号分段比较） |
-| `src/progress_store.py` | 进度文件统一管理（`runs/*_progress.json`）：跨天规整（旧日期次数归档进 history、清掉旧日期的 `study_secs/work_secs`；`school/duration` 作为会话元数据跨天保留供跨零点结算累计）、原子写入（先写 `.tmp` 再 `os.replace`，进程被杀不留损坏文件）、损坏兜底（解析失败备份成 `*.corrupted.bak` 后按空档继续）；全部进度读写走这里，`src/progress.py` 只做兼容层 |
+| `src/progress_store.py` | 进度文件统一管理（`runs/*_progress.json`）：跨天规整（旧日期次数归档进 history、清掉旧日期的 `study_secs/work_secs`；`school/duration_minutes/duration` 作为会话元数据跨天保留供跨零点结算累计）、原子写入（先写 `.tmp` 再 `os.replace`，进程被杀不留损坏文件）、损坏兜底（解析失败备份成 `*.corrupted.bak` 后按空档继续）；全部进度读写走这里，`src/progress.py` 只做兼容层 |
 | `src/progress.py` | 进度持久化对外兼容入口（常量 + 日志 + 各场景函数签名，内部转发 `src/progress_store.py`）：`log()`（控制台+文件+监听器）、`load_progress/save_progress/increment_progress`（含 history 跨天归档）、`count_cross` 交叉计数、学习/工作时长累计与迁移；进度文件固定 `runs/*.json` 单文件（曾按账号重定向到 `runs/accounts/<账号>/`，账号名靠状态面板 OCR 识别不稳定、数据被拆散，已取消多账号区分） |
 | `src/opener.py` | 模拟器模式集成（**零注入方案**：MuMu 机型伪装 / 设备门禁本地翻转 + 官方 scheme 跳转，旧版常驻 frida 注入被 QQ 风控"使用外挂插件"）：**Root 按需**——`_has_root()` 软检查（`su -c id`），有 Root 才做 `ensure_device_spoof()` 伪装重挂与 MMKV 补丁自检，无 Root 直接 scheme 直开（伪装/补丁都已持久化的设备日常零权限运行；scheme 失败且无 Root 时报错提示开一次 Root 打补丁，之后可永久关闭）；伪装改 MuMu app 级机型映射（`emulator.device_spoof` 开关控制，**默认关闭**——门禁补丁已翻转的设备不需要，设置页"MuMu 机型伪装"开关，opener 每次运行重新 load_config 天然热生效）（`/system/etc/mumu-configs/app-device-prop-*.config` 里 QQ 行从 `yyb.config` 原始模拟器 dump 换成真实手机 profile，root `mount --bind` 覆盖，重启模拟器失效、每次运行幂等重挂，非 MuMu 静默跳过），QQ 以真机身份运行、门禁原生通过、搜索卡片"宠物"入口可用；无伪装时模拟器被 QQ 判成 TABLET（`ro.build.characteristics` 含 tablet），门禁 `PetQQMC.e()` 读 UnitedConfig 107805 的 `enable_tablet`（默认 0）拦截官方跳转，此时 `ensure_gate_open()` 用 root 改本地 MMKV 缓存（`united_config_mmkv_<uin>` 追加 `enable_tablet:1` 记录 + 重算 CRC，`_patch_gate_mmkv` 有格式自检，不符就放弃不冒损坏风险）翻转门禁兜底；然后 `am start -a VIEW -d "mqqapi://qpet/open?..."`（JumpActivity，普通 shell 可发）由 QQ 官方路径打开宠物主页并初始化 SDK；三级调度：scheme 直开 → MMKV 补丁后 scheme → frida 一次性 SDK init + `am_start_pet_page` fragment 直开兜底（伪装名 `perf_daemon`、随机端口、几秒注入窗口，格式变化时启用）；`EMULATOR_MODE`/`GATE_OPEN` 标记由 `run_scheduler`/`--test`/`open_pet_page` 置位，visit 据此选游戏内导航或 am start 好友入口分支；好友入口 uin 由 `ensure_friend_entry()` 一次性注入捕获缓存 `runs/friend_entry.json`（仅兜底模式需要）；`_start_qq` 冷启动重试（`START_QQ_ATTEMPTS`=3）；QQ 服务端重发 107805 会覆盖补丁，每次启动自检重补 |
 | `src/status_cache.py` | 宠物状态缓存（`runs/status_cache.json`，单 default 条目——曾按账号名称组织兼容多账号，账号 OCR 误识别导致状态条多行，已取消）：体力/清洁/心情（care 状态面板 OCR 后）、金币（主页 OCR 后）、香皂/饼干（喂食/洗澡结束时 OCR 控件附近小图；库存角标无文字，取离 `feed_10`/`shower_10` 控件最近的数字）；一键护理后清空体力/清洁/心情/饼干/香皂；GUI 日志页顶部状态条每秒读一次 |
@@ -241,7 +242,7 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   （`src/scenario.py`），调度器 `run_one` 立即重试当前任务一次（不算失败/不重启，
   主任务/支线共用），护理后重试仍被拦截则按常规失败分流（主任务告警退出、
   支线 `ScenarioFailed` 退避）。
-- **好友护理调度**：`friend_care.enabled` 开启且配置了 `friend_name` 时，主循环按
+- **好友护理调度**：`friend_care.enabled` 开启，且配置了 `friend_name` 或开启好友福袋时，主循环按
   `friend_care.time_range`（HH:MM-HH:MM，支持跨零点）+ `friend_care.interval_seconds`
   调度间隔（`friend_care_due()`，距上次巡检完成时间起算）调度；每次调度只做一次
   护理巡检：只进入一次好友页，按好友列表实际顺序遍历，遇到配置名单中的好友就护理，
@@ -253,7 +254,10 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   `visit_friend_item`（该控件只存在于进入好友家后的底部轮播），所以
   `goto_first_friend()` 不能在点“访问”前等待/缓存底部好友名单；好友家有概率卡顿（喂食/洗澡面板打不开、
   页面卡死），当前好友原地重试 `FRIEND_CARE_RETRIES` 次，部分目标失败仍继续遍历，
-  全部目标都失败才抛给调度器走恢复链路。
+  全部目标都失败才抛给调度器走恢复链路。开启 `lucky_bag.friend_enabled` 后，每个已确认
+  好友先顺带领取福袋，即使配置护理名单已处理完也继续走到好友区末尾；顶部出现“加好友”
+  时跳过该对象，且遍历达到 `friend_navigation.min_scan_count`（默认 10）后立即结束，
+  `max_scan_count` 仍是最终兜底。护理自己时同理由 `lucky_bag.self_enabled` 控制领取。
 - **好友雇佣调度**：`hire_friend.enabled` 开启且配置了 `friend_name` 时，主循环在
   `hire_friend.time_range`（HH:MM-HH:MM，支持跨零点）时间段内按
   `hire_friend.interval_seconds`（默认 5 秒，距上次执行起算，`last_hire_at` 在执行处记录，
@@ -276,7 +280,8 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   后才计数（雇佣成功 + 打工各计一次，不做打工流程里的雇佣部分）；单个候选 CD 未结束/
   无法进入面板只继续下一位，不计失败；全部配置候选检查完或达到 `max_scan_count` 后仍无
   可用好友，整轮只计一次雇佣失败。雇佣分支选择工作时也必须调用
-  `set_current_work_duration()`，否则收尾会漏记打工时长。
+  `set_current_work_duration()`，否则收尾会漏记打工时长。与好友护理相同，默认至少遍历
+  10 位后检测到顶部“加好友”即停止；检测关闭或 OCR 未命中时仍由 `max_scan_count` 兜底。
 - **被雇佣检查调度**：`employed.enabled` 开启时，被雇佣时间段（`employed.time_range`，
   HH:MM-HH:MM 支持跨零点）内按 `employed.interval_seconds`（默认 60 秒）间隔出门
   检查是否被雇佣中（`employed_due()`，`scenarios/employed.py` 场景只做检测）；
@@ -285,9 +290,9 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
   （基类 `wait_employed_back` 仍是阻塞版，供主任务流程 `wait_busy_end` 用）；
   不在 `tasks.order` 里——队列引擎到点优先于队列任务先检查（`_run_employed_check`），
   巡检无论是否检测到都返回 True（同好友护理，False 会被标记当天不可继续）；
-  - **学习/工作时长规则（替代旧“每日点数”）**：学习结算按持久化的学园字段累计
-    （`school_progress.json` 的 `school`：初级10/中级20/高级150/进修45 分钟，学习开始时
-    `set_current_school` 不一致才更新）；打工结算按持久化的 `work.duration` 累计
+  - **学习/工作时长规则（替代旧“每日点数”）**：学习结算按持久化的手动时长累计
+    （`school_progress.json` 的 `school` + `duration_minutes`，设置页默认135分钟，学习开始时
+    `set_current_school` 原子更新）；打工结算按持久化的 `work.duration` 累计
     （`work_progress.json` 的 `duration`：10分钟/45分钟/2小时）。累计时长（秒）存
     `study_secs`/`work_secs`，`load_durations()` 读取（GUI 日志页“今日”显示
     `已学习/工作/总时长（小时）0.0/0.0/0.0` 1 位小数）；`_duration_over` 判断

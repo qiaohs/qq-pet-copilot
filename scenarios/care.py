@@ -30,6 +30,7 @@ from src.ocr import ocr_texts
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario
 from src.status_cache import clear_status_fields, update_status
+from scenarios.friend_features import claim_lucky_bag
 from src.u2dev import REF_SIZE
 
 # 洗澡搓洗点位：起点 = shower_10 控件中心（肥皂），其余按当前分辨率百分比换算
@@ -577,11 +578,14 @@ class CareScenario(DeviceScenario):
     def check_and_care(self) -> None:
         """检查一次体力/清洁，低于阈值则喂食/洗澡，最后收起状态面板。
         护理方式为"一键护理"时不读状态：主页面有一键护理按钮就点，然后直接结束。"""
+        self.ensure_main_page()
+        if getattr(getattr(self.cfg, 'lucky_bag', None), 'self_enabled', True):
+            claim_lucky_bag(self, '自己')
         if self.method == '一键护理':
-            self.ensure_main_page()
             self.one_click_care()
             return
-        source = self.ensure_main_page()
+        # 福袋领取/弹窗关闭后控件树可能变化，重新抓取再展开状态。
+        source = self.dev.hierarchy()
         self.toggle_status(source)
         # 状态面板展开后重新读状态；数值异步加载（刚展开可能只有账号/宠物名），
         # read_status_ready 内部重新截图重试；feed/shower 入口按钮重新抓控件树

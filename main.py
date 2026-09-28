@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFormLayout,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -290,6 +291,7 @@ TASK_SETTING_FIELDS = [
     ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
     ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
     ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
+    ('school.duration_minutes', '每次学习时长（分钟）', 'int'),
     ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
     ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
     ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
@@ -320,6 +322,10 @@ TASK_SETTING_FIELDS = [
     ('hire_friend.friend_name', '雇佣好友名称（逗号分隔多个）', 'str'),
     ('hire_friend.max_scan_count', '雇佣好友最大遍历数', 'int'),
     ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
+    ('friend_navigation.stop_at_non_friend', '遇到非好友时停止遍历', 'bool'),
+    ('friend_navigation.min_scan_count', '非好友停止前最少遍历数', 'int'),
+    ('lucky_bag.self_enabled', '护理自己时领取福袋', 'bool'),
+    ('lucky_bag.friend_enabled', '好友护理时领取福袋', 'bool'),
     ('care.method', '护理方式', ['一键护理', 'ocr检测']),
     ('care.energy_threshold', '体力阈值', 'int'),
     ('care.clean_threshold', '清洁阈值', 'int'),
@@ -342,6 +348,7 @@ SETTING_GROUP_TITLES = {
     'gui': '界面',
     'emulator': '模拟器', 'recover': '异常恢复',
     'runner': '调度引擎', 'tasks': '任务队列', 'schedule': '全局规则',
+    'friend_navigation': '好友列表边界', 'lucky_bag': '福袋',
     'notify': '告警通知',
     'school': '学习', 'work': '打工', 'adventure': '冒险',
     'visit': '踩踩', 'pk': 'PK',
@@ -535,10 +542,10 @@ class ScrcpyContainer(QWidget):
         # 未嵌入时跟随主题背景（透出下层卡片色），不显示死黑一块；
         # 嵌入后画面按真实比例正好铺满，无需黑色留白
         self.setStyleSheet('background: transparent; border-radius: 8px;')
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(220)
 
     def sizeHint(self) -> QSize:
-        return QSize(360, 640)  # 9:16 竖屏
+        return QSize(252, 448)  # 紧凑态保持 9:16，比适应态明显更小
 
     def hasHeightForWidth(self) -> bool:
         return True
@@ -611,6 +618,27 @@ class ScrcpyContainer(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._fit()
+
+
+class HoverOpacityToolButton(TransparentToolButton):
+    """默认半透明，鼠标移入后完整显示的画面悬浮按钮。"""
+
+    def __init__(self, icon, parent=None):
+        # qfluentwidgets 的 (icon, parent) 重载内部会再次调用 self.__init__；
+        # 子类直接走该入口会递归回本构造器，因此先按 parent 初始化再设置图标。
+        super().__init__(parent)
+        self.setIcon(icon)
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.55)
+        self.setGraphicsEffect(self._opacity_effect)
+
+    def enterEvent(self, event) -> None:
+        self._opacity_effect.setOpacity(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._opacity_effect.setOpacity(0.55)
+        super().leaveEvent(event)
 
 
 def device_aspect() -> tuple[int, int] | None:
@@ -895,12 +923,12 @@ class MainWindow(MSFluentWindow):
         self._screen_scroll.setStyleSheet(
             'QScrollArea { background: transparent; border: none; }')
         screen_layout.addWidget(self._screen_scroll)
-        # 浮在画面卡右上角，不占手机画面高度；放大后仍在原位，方便一键还原。
-        self._screen_zoom_button = TransparentToolButton(FIF.ZOOM_IN, self._screen_card)
+        # 浮在画面卡左上角，不占手机画面高度；默认半透明，悬浮后完整显示。
+        self._screen_zoom_button = HoverOpacityToolButton(FIF.ZOOM_IN, self._screen_card)
         self._screen_zoom_button.setFixedSize(36, 36)
         self._screen_zoom_button.setToolTip('让手机画面等比适应左侧面板')
         self._screen_zoom_button.clicked.connect(self._toggle_screen_zoom)
-        self._screen_capture_button = TransparentToolButton(FIF.CAMERA, self._screen_card)
+        self._screen_capture_button = HoverOpacityToolButton(FIF.CAMERA, self._screen_card)
         self._screen_capture_button.setFixedSize(36, 36)
         self._screen_capture_button.setToolTip('保存当前手机截图到 runs/screenshots')
         self._screen_capture_button.clicked.connect(self._capture_screen)
@@ -949,11 +977,11 @@ class MainWindow(MSFluentWindow):
         if not aw or not ah:
             aw, ah = 9, 16
         # 适应态按可用高度计算理想宽度；窗口较窄时给右侧至少保留其最小宽度。
-        target = max(300, int(h * aw / ah) + 20)
+        target = max(240, int(h * aw / ah) + 20)
         page = card.parentWidget()
         if page is not None:
             max_left = page.width() - self._home_side.minimumWidth() - 16
-            target = min(target, max(300, max_left))
+            target = min(target, max(240, max_left))
         # 紧凑态接近 scrcpy 原始嵌入尺寸；点击放大后才完整利用左侧可用高度。
         if not self._screen_zoomed:
             target = min(target, self.scrcpy_view.sizeHint().width() + 20)
@@ -968,13 +996,10 @@ class MainWindow(MSFluentWindow):
         else:
             self.scrcpy_view.setFixedSize(self.scrcpy_view.sizeHint())
         if button:
-            button.move(max(10, card.width() - button.width() - 10), 10)
+            button.move(10 + (capture_button.width() if capture_button else 36) + 6, 10)
             button.raise_()
         if capture_button:
-            capture_button.move(
-                max(10, card.width() - capture_button.width()
-                    - (button.width() if button else 36) - 16),
-                10)
+            capture_button.move(10, 10)
             capture_button.raise_()
         self.scrcpy_view._fit()
 
@@ -1005,14 +1030,17 @@ class MainWindow(MSFluentWindow):
         def work() -> None:
             try:
                 with self._test_lock:
-                    screen = self._get_test_dev().screenshot()
+                    # 只走 adb screencap，不新建 uiautomator2 会话；调度器运行中截图
+                    # 也不会与正在执行的 u2 点击/控件树读取争用连接初始化。
+                    png = self._get_adb_dev().screenshot_png()
                 output_dir = APP_ROOT / 'runs' / 'screenshots'
                 output_dir.mkdir(parents=True, exist_ok=True)
                 stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 path = output_dir / f'screenshot_{stamp}.png'
+                from io import BytesIO
                 from PIL import Image
 
-                Image.fromarray(screen).save(path)
+                Image.open(BytesIO(png)).convert('RGB').save(path)
                 log(f'手机截图已保存: {path}')
             except Exception as e:
                 log(f'手机截图失败: {e}')
@@ -1334,7 +1362,8 @@ class MainWindow(MSFluentWindow):
                 ('雇佣失败', HIRE_FRIEND_FAILURE_PROGRESS_FILE, 0),
             ]
             study_s, work_s = load_durations(
-                cfg.schedule.school_factor, cfg.schedule.work_factor)
+                cfg.schedule.school_factor, cfg.schedule.work_factor,
+                cfg.school.duration_minutes)
             values = {
                 # 整数时长不带小数点（0 而不是 0.0），一位小数照常显示
                 'study_h': f'{study_s / 3600:.1f}'.removesuffix('.0'),

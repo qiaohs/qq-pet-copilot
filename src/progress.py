@@ -144,13 +144,13 @@ def count_cross(finished: str) -> None:
         record_work_finish()
 
 
-# ---- 学习/工作时长累计（替代旧"每日点数"规则，按学园/打工时长结算） ----
+# ---- 学习/工作时长累计（学习按手动配置、打工按选择时长结算） ----
 # 各学园一节课对应的学习时长（秒）
 SCHOOL_DURATION_SECONDS = {
     '初级学园': 10 * 60,
     '中级学园': 20 * 60,
-    # 2026-09 游戏实测高级学园一节为 150 分钟；旧值 30 分钟会让统计少算 5 倍。
-    '高级学园': 150 * 60,
+    # 未持久化手动时长的旧进度回退值；当前实测为 135 分钟。
+    '高级学园': 135 * 60,
     '进修学院': 45 * 60,
 }
 # 打工时长配置 -> 单次打工时长（秒）
@@ -166,9 +166,23 @@ def get_current_school() -> str | None:
     return progress_store.get_daily_field(SCHOOL_PROGRESS_FILE, 'school')
 
 
-def set_current_school(school: str) -> None:
-    """学习开始时记录当前学园：跨天时总是落盘推进日期，否则值变化才写（减少落盘）。"""
-    progress_store.set_daily_field(SCHOOL_PROGRESS_FILE, 'school', school)
+def set_current_school(school: str, duration_minutes: int | None = None) -> None:
+    """学习开始时原子记录当前学园及本节手动配置时长。"""
+    values = {'school': school}
+    if duration_minutes is not None and int(duration_minutes) > 0:
+        values['duration_minutes'] = int(duration_minutes)
+    progress_store.set_daily_fields(SCHOOL_PROGRESS_FILE, values)
+
+
+def get_current_study_minutes() -> int | None:
+    """本节持久化的学习分钟数；旧进度按学园默认值兜底。"""
+    saved = progress_store.to_int(
+        progress_store.get_daily_field(SCHOOL_PROGRESS_FILE, 'duration_minutes'))
+    if saved > 0:
+        return saved
+    school = get_current_school()
+    seconds = SCHOOL_DURATION_SECONDS.get(school or '')
+    return seconds // 60 if seconds else None
 
 
 def get_current_work_duration() -> str | None:
@@ -190,11 +204,12 @@ def _add_seconds(progress_file: Path, key: str, seconds: int) -> int:
 
 
 def record_study_finish() -> int | None:
-    """一节课结算：按持久化的学园累计学习时长（秒），返回当天累计或 None（学园未知）。"""
+    """一节课结算：按学习开始时持久化的手动时长累计。"""
     school = get_current_school()
-    secs = SCHOOL_DURATION_SECONDS.get(school or '')
-    if not secs:
+    minutes = get_current_study_minutes()
+    if not minutes:
         return None
+    secs = minutes * 60
     total = _add_seconds(SCHOOL_PROGRESS_FILE, 'study_secs', secs)
     log(f'学习结算: {school} +{secs // 60} 分钟，今日已学习 {total // 60} 分钟')
     return total
@@ -251,36 +266,41 @@ def _ensure_work_duration_floor() -> None:
         f'（原统计 {current // 60} 分钟）')
 
 
-def _repair_advanced_study_duration() -> None:
-    """修正高级学园曾按 30 分钟/次写入的当天时长。
+def _initialize_study_duration(duration_minutes: int) -> None:
+    """为旧进度补上手动时长，并修正高级学园曾使用的 30/150 分钟旧值。
 
-    仅在 ``study_secs`` 恰好等于 ``learned * 30 分钟`` 时修正，避免把混合了
-    不同学园课程的正常记录误改。该判断幂等，修正后不会再次命中。
+    只处理尚无 ``duration_minutes`` 的旧进度；写入后不再反复改动，因此用户以后
+    调整时长只影响后续课程，不会重算已经结算的课程。
     """
+    if duration_minutes <= 0:
+        return
     data = progress_store.read_raw(SCHOOL_PROGRESS_FILE)
-    if data.get('date') != date.today().isoformat() or data.get('school') != '高级学园':
+    if (data.get('date') != date.today().isoformat() or not data.get('school')
+            or progress_store.to_int(data.get('duration_minutes')) > 0):
         return
     count = progress_store.to_int(data.get('learned', 0))
     current = progress_store.to_int(data.get('study_secs', 0))
-    old_total = count * 30 * 60
-    if count <= 0 or current != old_total:
-        return
-    corrected = count * SCHOOL_DURATION_SECONDS['高级学园']
-    data['study_secs'] = corrected
+    if (data.get('school') == '高级学园' and count > 0
+            and current in (count * 30 * 60, count * 150 * 60)):
+        corrected = count * duration_minutes * 60
+        data['study_secs'] = corrected
+        log(f'修正高级学园学习时长: 今天 {count} 次由 {current // 60} 分钟改为'
+            f' {corrected // 60} 分钟')
+    data['duration_minutes'] = duration_minutes
     progress_store.write_raw(SCHOOL_PROGRESS_FILE, data)
-    log(f'修正高级学园学习时长: 今天 {count} 次由 {current // 60} 分钟改为'
-        f' {corrected // 60} 分钟')
 
 
-def load_durations(school_factor: int = 0, work_factor: int = 0) -> tuple[int, int]:
+def load_durations(school_factor: int = 0, work_factor: int = 0,
+                   study_duration_minutes: int = 135) -> tuple[int, int]:
     """今天已累计 (学习秒, 打工秒)。
 
     首次运行新版本：老进度今天只有次数没有时长时，按旧版 学习/打工点数系数
     （即每节/每次的分钟数）自动换算补上，之后正常累计。
     """
-    _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', school_factor)
+    # 学习时长已改为用户配置；旧 school_factor 只保留函数签名兼容，不再用于迁移。
+    _migrate_old_durations(SCHOOL_PROGRESS_FILE, 'study_secs', study_duration_minutes)
     _migrate_old_durations(WORK_PROGRESS_FILE, 'work_secs', work_factor)
-    _repair_advanced_study_duration()
+    _initialize_study_duration(study_duration_minutes)
     _ensure_work_duration_floor()
     return (_today_seconds(SCHOOL_PROGRESS_FILE, 'study_secs'),
             _today_seconds(WORK_PROGRESS_FILE, 'work_secs'))

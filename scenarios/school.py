@@ -84,11 +84,14 @@ class SchoolScenario(DeviceScenario):
                 f'可选: {"/".join(ATTRIBUTE_COURSES)}'
             )
         self.times_per_day = self.cfg.school.times_per_day
+        self.duration_minutes = int(self.cfg.school.duration_minutes)
+        if not 1 <= self.duration_minutes <= 1440:
+            raise ValueError('school.duration_minutes 必须在 1-1440 分钟之间')
         # 毕业处理防循环标志：关闭毕业面板后重新进学校仍出现毕业标志时抛异常，
         # 走重试链而不是无限"毕业->回主页面->再进"空转；成功看到 school_start 时重置
         self._graduated_once = False
-        log(f'属性点: {self.attribute}，每天学习次数: '
-            f'{self.times_per_day if self.times_per_day else "不限"}')
+        log(f'属性点: {self.attribute}，每次学习: {self.duration_minutes} 分钟，'
+            f'每天学习次数: {self.times_per_day if self.times_per_day else "不限"}')
 
     # ---- 各阶段 ----
 
@@ -179,10 +182,8 @@ class SchoolScenario(DeviceScenario):
         screen = self.screen()
         results = ocr_texts(screen[: screen.shape[0] // 2])
         stage = self._detect_stage(results)
-        if stage:
-            # 学习开始时把当前学园持久化到 school_progress.json（不一致才更新，
-            # 结算时按它累计学习时长：初级10/中级20/高级150/进修45 分钟）
-            set_current_school(stage)
+        # 即使本轮阶段 OCR 失败，也要持久化手动时长，保证本节统计不丢失。
+        set_current_school(stage or '未识别', self.duration_minutes)
         if stage == '进修学院':
             box = INSTITUTE_ATTRIBUTE_COURSES[self.attribute]
             log(f'学园阶段: {stage}，课程顺序 力量/魅力/智力，{self.attribute} -> {box}')

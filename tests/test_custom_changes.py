@@ -7,6 +7,13 @@ import tempfile
 
 from scenarios.friend_care import FriendCareScenario
 from scenarios.hire_friend import FriendHireScenario, FriendUnavailable
+from scenarios.friend_features import (
+    LUCKY_BAG_ABSENT,
+    LUCKY_BAG_CLAIMED,
+    LUCKY_BAG_UNOPENED,
+    claim_lucky_bag,
+    lucky_bag_state,
+)
 from scenarios.visit import VisitScenario
 from main import ScrcpyContainer
 from src.scenario import TaskDeferred
@@ -15,9 +22,52 @@ from scenarios.runner import TaskQueueRunner, _QueueTask
 from src import progress, progress_store
 from src.coins import read_coins_from_ocr
 from src.config import TaskItemConfig
+from src.adb.device import Device
 
 
 class CustomChangesTest(TestCase):
+    def test_gui_screenshot_uses_valid_adb_png(self):
+        dev = Device.__new__(Device)
+        dev.ensure_connected = lambda: 'serial'
+        png = b'\x89PNG\r\n\x1a\ncontent'
+        dev._run = lambda *_args: SimpleNamespace(stdout=png)
+        self.assertEqual(dev.screenshot_png(), png)
+
+    def test_lucky_bag_recognizes_glow_and_claimed_bag(self):
+        import cv2
+        import numpy as np
+
+        unopened_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
+        unopened_hsv[900:980, 80:110] = (25, 180, 230)
+        unopened = cv2.cvtColor(unopened_hsv, cv2.COLOR_HSV2RGB)
+        self.assertEqual(lucky_bag_state(unopened), LUCKY_BAG_UNOPENED)
+
+        # 回归：暖色地板/发光宠物窝可能面积很大，但形状是横向扁块，不是福袋光晕。
+        floor_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
+        floor_hsv[964:1008, 67:159] = (25, 180, 230)
+        floor = cv2.cvtColor(floor_hsv, cv2.COLOR_HSV2RGB)
+        self.assertEqual(lucky_bag_state(floor), LUCKY_BAG_ABSENT)
+
+        claimed_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
+        claimed_hsv[895:920, 90:120] = (10, 180, 180)
+        claimed = cv2.cvtColor(claimed_hsv, cv2.COLOR_HSV2RGB)
+        self.assertEqual(lucky_bag_state(claimed), LUCKY_BAG_CLAIMED)
+
+    def test_lucky_bag_closes_possible_popup_by_shadow_click(self):
+        import numpy as np
+
+        scen = SimpleNamespace()
+        scen.screen = lambda: np.zeros((1440, 720, 3), dtype=np.uint8)
+        clicks = []
+        scen.click = lambda x, y: clicks.append((x, y))
+        with patch('scenarios.friend_features.lucky_bag_state',
+                   side_effect=[LUCKY_BAG_UNOPENED, LUCKY_BAG_CLAIMED]), \
+                patch('scenarios.friend_features.time.sleep'):
+            self.assertEqual(claim_lucky_bag(scen, '好友'), LUCKY_BAG_CLAIMED)
+        self.assertEqual(clicks[0], (112, 950))
+        self.assertEqual(clicks[1], (18, 691))
+        self.assertEqual(clicks[2], (18, 691))
+
     def test_visit_reentry_above_threshold_finishes_without_reloading_list(self):
         scen = VisitScenario.__new__(VisitScenario)
         scen.continuous_target = 950
@@ -35,6 +85,25 @@ class CustomChangesTest(TestCase):
             self.assertFalse(scen.run())
         self.assertEqual(len(closed), 1)
         self.assertEqual(len(main_page), 1)
+
+    def test_next_friend_retries_until_carousel_really_moves(self):
+        scen = VisitScenario.__new__(VisitScenario)
+        scen._friends = ['好友 A', '好友 B']
+        scen._friend_index = 0
+        scen.wait_attempts = lambda value: value
+        before = [('好友 A', 78, 1255), ('好友 B', 465, 1255)]
+        moved = [('好友 A', 78, 1255), ('好友 B', 269, 1255),
+                 ('好友 C', 465, 1255)]
+        frames = iter([before, before, moved])
+        scen._friend_items = lambda: next(frames)
+        clicks = []
+        scen.click = lambda x, y: clicks.append((x, y))
+
+        with patch('scenarios.visit.time.sleep'):
+            self.assertTrue(scen.next_friend(before))
+        self.assertEqual(clicks, [(465, 1255), (465, 1255)])
+        self.assertEqual(scen._friend_index, 1)
+        self.assertEqual(scen._friends, ['好友 A', '好友 B', '好友 C'])
 
     def test_visit_current_session_ignores_exit_threshold_and_targets_950(self):
         scen = VisitScenario.__new__(VisitScenario)
@@ -72,6 +141,10 @@ class CustomChangesTest(TestCase):
         with patch('main.win32gui.MoveWindow') as move:
             ScrcpyContainer._fit(fake)
         move.assert_called_once_with(123, 0, 100, 900, 1600, True)
+
+    def test_scrcpy_compact_size_is_distinct_from_fit_mode(self):
+        hint = ScrcpyContainer.sizeHint(None)
+        self.assertEqual((hint.width(), hint.height()), (252, 448))
 
     def test_rest_window_supports_normal_and_cross_midnight_ranges(self):
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
@@ -148,20 +221,31 @@ class CustomChangesTest(TestCase):
         self.assertEqual(status['体力'], 96)
         self.assertEqual(len(clicks), 1)
 
-    def test_advanced_school_old_30_minutes_is_repaired_to_150(self):
+    def test_advanced_school_legacy_30_or_150_is_repaired_to_135(self):
+        for old_minutes in (30, 150):
+            with self.subTest(old_minutes=old_minutes), tempfile.TemporaryDirectory() as tmp:
+                school_file = Path(tmp) / 'school.json'
+                work_file = Path(tmp) / 'work.json'
+                progress_store.write_raw(school_file, {
+                    'date': progress_store.today_str(),
+                    'learned': 1,
+                    'school': '高级学园',
+                    'study_secs': old_minutes * 60,
+                })
+                with patch.object(progress, 'SCHOOL_PROGRESS_FILE', school_file), \
+                        patch.object(progress, 'WORK_PROGRESS_FILE', work_file):
+                    study_secs, _ = progress.load_durations()
+                self.assertEqual(study_secs, 135 * 60)
+                saved = progress_store.read_raw(school_file)
+                self.assertEqual(saved['duration_minutes'], 135)
+
+    def test_custom_study_duration_is_persisted_for_finish(self):
         with tempfile.TemporaryDirectory() as tmp:
             school_file = Path(tmp) / 'school.json'
-            work_file = Path(tmp) / 'work.json'
-            progress_store.write_raw(school_file, {
-                'date': progress_store.today_str(),
-                'learned': 1,
-                'school': '高级学园',
-                'study_secs': 30 * 60,
-            })
-            with patch.object(progress, 'SCHOOL_PROGRESS_FILE', school_file), \
-                    patch.object(progress, 'WORK_PROGRESS_FILE', work_file):
-                study_secs, _ = progress.load_durations()
-            self.assertEqual(study_secs, 150 * 60)
+            with patch.object(progress, 'SCHOOL_PROGRESS_FILE', school_file):
+                progress.set_current_school('高级学园', 123)
+                total = progress.record_study_finish()
+            self.assertEqual(total, 123 * 60)
 
     def test_friend_care_uses_list_order_and_enters_once(self):
         scen = FriendCareScenario.__new__(FriendCareScenario)
@@ -172,7 +256,9 @@ class CustomChangesTest(TestCase):
             energy_target=70,
             clean_target=90,
             time_range='00:00-00:00',
-        ))
+        ), lucky_bag=SimpleNamespace(friend_enabled=False),
+            friend_navigation=SimpleNamespace(stop_at_non_friend=False,
+                                              min_scan_count=10))
         state = {'index': 0, 'begins': 0, 'closes': 0}
         friends = ['好友 qq2', '好友 其他人', '好友 qq1']
         cared = []
@@ -200,7 +286,8 @@ class CustomChangesTest(TestCase):
             enabled=True,
             friend_name='qq1,qq2',
             times_per_day=1,
-        ))
+        ), friend_navigation=SimpleNamespace(stop_at_non_friend=False,
+                                             min_scan_count=10))
         scen.defer_wait = True
         state = {'index': 0, 'begins': 0}
         friends = ['好友 qq2', '好友 qq1']
@@ -244,7 +331,8 @@ class CustomChangesTest(TestCase):
             friend_name='qq1,qq2',
             max_scan_count=20,
             times_per_day=1,
-        ))
+        ), friend_navigation=SimpleNamespace(stop_at_non_friend=False,
+                                             min_scan_count=10))
         scen.defer_wait = True
         friends = ['好友 qq1', '好友 qq2']
         state = {'index': 0}
@@ -276,7 +364,9 @@ class CustomChangesTest(TestCase):
             clean_target=80,
             max_scan_count=3,
             time_range='00:00-00:00',
-        ))
+        ), lucky_bag=SimpleNamespace(friend_enabled=False),
+            friend_navigation=SimpleNamespace(stop_at_non_friend=False,
+                                              min_scan_count=10))
         state = {'index': 0, 'closes': 0}
         friends = [f'好友 路人{i}' for i in range(10)]
         scen.ensure_main_page = lambda: None
@@ -303,7 +393,8 @@ class CustomChangesTest(TestCase):
             friend_name='不存在的好友',
             max_scan_count=3,
             times_per_day=1,
-        ))
+        ), friend_navigation=SimpleNamespace(stop_at_non_friend=False,
+                                             min_scan_count=10))
         scen.defer_wait = True
         state = {'index': 0, 'closes': 0}
         friends = [f'好友 路人{i}' for i in range(10)]
@@ -328,3 +419,57 @@ class CustomChangesTest(TestCase):
         failed.assert_called_once()
         self.assertEqual(state['index'], 2)
         self.assertEqual(state['closes'], 1)
+
+    def test_friend_care_stops_at_non_friend_only_after_minimum_scan(self):
+        scen = FriendCareScenario.__new__(FriendCareScenario)
+        scen.cfg = SimpleNamespace(
+            friend_care=SimpleNamespace(
+                enabled=True, friend_name='不存在', method='ocr检测',
+                energy_target=70, clean_target=90, max_scan_count=20,
+                time_range='00:00-00:00'),
+            lucky_bag=SimpleNamespace(friend_enabled=False),
+            friend_navigation=SimpleNamespace(stop_at_non_friend=True,
+                                              min_scan_count=10))
+        state = {'index': 0, 'closed': 0}
+        friends = [f'好友 {i}' for i in range(20)]
+        scen.ensure_main_page = lambda: None
+        scen.wait_attempts = lambda value: 1
+        scen.begin_friend_walk = lambda: None
+        scen.current_friend = lambda: (friends[state['index']], [])
+        scen.screen = lambda: object()
+        scen.next_friend = lambda _visible: state.__setitem__('index', state['index'] + 1) or True
+        scen.close = lambda: state.__setitem__('closed', state['closed'] + 1)
+        with patch('scenarios.friend_care.is_non_friend_page',
+                   side_effect=lambda _screen: state['index'] >= 4):
+            self.assertTrue(scen.run())
+        self.assertEqual(state['index'], 9)
+        self.assertEqual(state['closed'], 1)
+
+    def test_hire_stops_at_non_friend_after_minimum_scan_and_counts_once(self):
+        scen = FriendHireScenario.__new__(FriendHireScenario)
+        scen.cfg = SimpleNamespace(
+            hire_friend=SimpleNamespace(
+                enabled=True, friend_name='不存在', max_scan_count=20,
+                times_per_day=1),
+            friend_navigation=SimpleNamespace(stop_at_non_friend=True,
+                                              min_scan_count=10))
+        scen.defer_wait = True
+        state = {'index': 0}
+        friends = [f'好友 {i}' for i in range(20)]
+        scen.ensure_main_page = lambda: None
+        scen.detect_busy_remaining = lambda: None
+        scen.begin_friend_walk = lambda: None
+        scen.current_friend = lambda: (friends[state['index']], [])
+        scen.screen = lambda: object()
+        scen.next_friend = lambda _visible: state.__setitem__('index', state['index'] + 1) or True
+        scen.close = lambda: None
+        with patch('scenarios.hire_friend.load_progress',
+                   return_value=(progress_store.today_str(), 0, {})), \
+                patch('scenarios.hire_friend.log_history'), \
+                patch('scenarios.hire_friend.is_non_friend_page',
+                      side_effect=lambda _screen: state['index'] >= 4), \
+                patch('scenarios.hire_friend.increment_progress', return_value=1) as failed:
+            with self.assertRaises(TaskDeferred):
+                scen.run()
+        self.assertEqual(state['index'], 9)
+        failed.assert_called_once()

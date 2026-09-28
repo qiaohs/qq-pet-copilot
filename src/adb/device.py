@@ -1,8 +1,8 @@
 """adb 设备封装：设备检测与连接管理、屏幕属性读取、adb 命令管道。
 
-画面截图与点击/滑动等操控已改由 uiautomator2 负责（见 src/u2dev.py），
-这里只保留 u2 连接前的 adb server/设备在线管理，以及 main.py
-嵌入 scrcpy 时需要的屏幕宽高比读取。
+自动化截图与点击/滑动等操控由 uiautomator2 负责（见 src/u2dev.py）；
+这里保留 u2 连接前的 adb server/设备在线管理、main.py 嵌入 scrcpy 时需要的
+屏幕宽高比读取，以及 GUI 手动截图按钮使用的无干扰 adb screencap。
 """
 from __future__ import annotations
 
@@ -101,6 +101,14 @@ class Device:
         # 形如 "Physical size: 1080x2400"
         size = out.strip().split(":")[-1].strip().split("x")
         return int(size[0]), int(size[1])
+
+    def screenshot_png(self) -> bytes:
+        """通过 adb 直接取得 PNG 截图，不创建额外 uiautomator2 连接。"""
+        self.ensure_connected()
+        data = self._run("exec-out", "screencap", "-p").stdout
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise AdbError("adb 截图未返回有效 PNG 数据")
+        return data
 
     def reboot_and_wait(self, timeout: float = 180.0, interval: float = 5.0) -> None:
         """重启设备并等待开机完成（sys.boot_completed=1），超时抛 AdbError。"""

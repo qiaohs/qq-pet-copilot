@@ -51,6 +51,8 @@ from scenarios.care import ONE_CLICK_PAY_RETRIES
 FRIEND_ITEM_XPATH = LOCATORS['visit_friend_item']['xpath'][0]
 STEP_RETRIES = 5  # 切换好友后踩踩按钮有几秒加载延迟，重试次数
 FRIEND_LIST_RETRIES = 5  # 好友页左侧列表可能晚于踩踩按钮出现
+FRIEND_SWITCH_CLICK_RETRIES = 2  # 好友轮播点击偶尔未生效，验证失败后重点一次
+FRIEND_SWITCH_POLL_RETRIES = 2  # 每次点击后等待轮播位置/名单实际变化
 
 PROGRESS_FILE = VISIT_PROGRESS_FILE
 
@@ -171,8 +173,8 @@ class VisitScenario(DeviceScenario):
 
         好友列表滚动加载，控件树里只有当前可见项：每次重新抓取只把
         新出现的好友追加到累积名单尾部（不删除滚出屏幕的项），切换索引
-        基于累积名单；点击目标从当前可见项里按 content-desc 找，
-        找不到（还没滚出来）视为没有更多好友。
+        基于累积名单。点击后必须看到轮播名单或坐标实际变化才算切换成功；
+        否则重试，避免一次点击丢失后把仍有后续好友误判成列表结束。
         """
         # 调用方刚抓过列表时可传进来复用，避免同一画面连续 dump 两次并重复日志。
         if visible is None:
@@ -184,18 +186,45 @@ class VisitScenario(DeviceScenario):
         # 名字；已打印过的名字不再重复，累计数量仍保留用于观察遍历进度。
         if new:
             log(f'新增好友({len(new)}，累计 {len(self._friends)}): ' + ', '.join(new))
-        self._friend_index += 1
-        if self._friend_index >= len(self._friends):
+        next_index = self._friend_index + 1
+        if next_index >= len(self._friends):
             return False
-        target = self._friends[self._friend_index]
+        target = self._friends[next_index]
         for desc, x, y in visible:
             if desc == target:
-                log(f'切换第 {self._friend_index + 1} 个好友: {target} ({x}, {y})')
-                self.click(x, y)
-                time.sleep(CLICK_INTERVAL)
-                return True
-        log(f'下一个好友 {target} 当前不可见，停止切换')
-        return False
+                before_names = tuple(item_desc for item_desc, _, _ in visible)
+                click_attempts = self.wait_attempts(FRIEND_SWITCH_CLICK_RETRIES)
+                poll_attempts = self.wait_attempts(FRIEND_SWITCH_POLL_RETRIES)
+                for attempt in range(1, click_attempts + 1):
+                    log(f'切换第 {next_index + 1} 个好友: {target} ({x}, {y})')
+                    self.click(x, y)
+                    for _ in range(poll_attempts):
+                        time.sleep(CLICK_INTERVAL)
+                        after = self._friend_items()
+                        if not after:
+                            continue
+                        after_names = tuple(item_desc for item_desc, _, _ in after)
+                        target_x = next((item_x for item_desc, item_x, _ in after
+                                         if item_desc == target), None)
+                        # 正常选中后目标会向轮播中央移动约 50px，或列表滑出/滑入一人。
+                        # 忽略控件边界 1-2px 的轻微抖动，避免把未生效误当作已切换。
+                        moved = (after_names != before_names
+                                 or (target_x is not None and abs(target_x - x) >= 20))
+                        if not moved:
+                            continue
+                        appeared = [item_desc for item_desc, _, _ in after
+                                    if item_desc and item_desc not in self._friends]
+                        self._friends.extend(appeared)
+                        if appeared:
+                            log(f'新增好友({len(appeared)}，累计 {len(self._friends)}): '
+                                + ', '.join(appeared))
+                        self._friend_index = next_index
+                        return True
+                    if attempt < click_attempts:
+                        log(f'目标 {target} 点击后轮播未移动，重新点击 '
+                            f'({attempt}/{click_attempts})')
+                raise RuntimeError(f'切换好友 {target} 失败：连续点击后轮播仍未移动')
+        raise RuntimeError(f'下一个好友 {target} 当前不可见，无法确认列表已结束')
 
     def close(self) -> None:
         """关闭好友相关页面：点 back 直到 踩踩/访问/好友列表 都消失。"""
