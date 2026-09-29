@@ -10,7 +10,10 @@ from PyInstaller.utils.hooks import collect_all
 EMULATOR = bool(os.environ.get('QQ_PET_EMULATOR'))
 EXE_NAME = 'QQPetCopilotEmulator' if EMULATOR else 'QQPetCopilot'
 
+APP_ICON = 'qq轻聊.ico' if Path('qq轻聊.ico').is_file() else None
 datas = [('config.example.yaml', '.')]
+if APP_ICON:
+    datas.append((APP_ICON, '.'))
 # resources/scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上
 if Path('resources/scrcpy-win64/scrcpy.exe').is_file():
     datas.append(('resources/scrcpy-win64', 'resources/scrcpy-win64'))
@@ -114,7 +117,7 @@ if os.environ.get('QQ_PET_ONEDIR'):
               debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
               upx_exclude=[], console=False, disable_windowed_traceback=False,
               argv_emulation=False, target_arch=None, codesign_identity=None,
-              entitlements_file=None)
+              entitlements_file=None, icon=APP_ICON)
     coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True,
                    upx_exclude=[], name=EXE_NAME)
 else:
@@ -124,4 +127,4 @@ else:
               strip=False, upx=True, upx_exclude=[], runtime_tmpdir=None,
               console=False, disable_windowed_traceback=False,
               argv_emulation=False, target_arch=None, codesign_identity=None,
-              entitlements_file=None)
+              entitlements_file=None, icon=APP_ICON)

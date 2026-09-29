@@ -30,7 +30,7 @@ def log(msg: str) -> None:
     line = f'[{time.strftime("%H:%M:%S")}] {msg}'
     try:  # 打包成 --windowed 后没有控制台，stdout 可能是无效流，不能让它拖垮日志
         print(line, flush=True)
-    except (OSError, UnicodeError):
+    except (AttributeError, OSError, UnicodeError):
         pass
     try:  # 写入日志文件 runs/logs/YYYY-MM-DD.log
         log_dir = PROJECT_ROOT / 'runs' / 'logs'

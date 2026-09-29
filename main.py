@@ -23,10 +23,40 @@ import time
 import zlib
 from datetime import datetime, timedelta
 
+
+def _prepare_windowed_streams() -> None:
+    """给 pythonw/--windowed 模式补齐标准流。
+
+    pythonw.exe 默认把 stdout/stderr 设为 None；项目日志和部分第三方组件仍会
+    写标准流，可能在 GUI 出现前直接退出。普通日志丢到空设备，异常输出保留到
+    runs/launcher.log，既不弹控制台，也不会再静默失败。
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    app_root = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+                else os.path.dirname(os.path.abspath(__file__)))
+    try:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+        if sys.stderr is None:
+            log_dir = os.path.join(app_root, 'runs')
+            os.makedirs(log_dir, exist_ok=True)
+            sys.stderr = open(os.path.join(log_dir, 'launcher.log'), 'a',
+                              encoding='utf-8', buffering=1)
+            sys.stderr.write(f'\n[{datetime.now():%Y-%m-%d %H:%M:%S}] GUI 启动\n')
+    except OSError:
+        # 即使日志目录不可写，也要给 print/traceback 一个可用目标。
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
+
+_prepare_windowed_streams()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PyQt6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QPainter, QPen
+from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -2908,6 +2938,18 @@ def _strip_emulator_args(argv: list[str]) -> list[str]:
     return out
 
 
+def _move_window_near_bottom_right(window: QWidget, margin: int = 16) -> None:
+    """把窗口完整放进主屏幕工作区，并让右下角距屏幕边缘留少量空隙。"""
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return
+    area = screen.availableGeometry()
+    size = window.size()
+    x = max(area.left(), area.right() - size.width() - margin + 1)
+    y = max(area.top(), area.bottom() - size.height() - margin + 1)
+    window.move(x, y)
+
+
 def main() -> None:
     emulator, emulator_device = _parse_emulator_args()
     skip_opener = '--skip-opener' in sys.argv
@@ -2928,11 +2970,26 @@ def main() -> None:
                       skip_opener=skip_opener)
         return
     _ensure_runtime_resources(emulator)
+    if sys.platform == 'win32':
+        # 源码版由 pythonw.exe 承载；显式设置应用标识，避免任务栏按 Python
+        # 进程分组或沿用 Python 图标。
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'qiaohs.QQPetCopilot')
+        except (AttributeError, OSError):
+            pass
     app = QApplication(_strip_emulator_args(sys.argv))
+    icon_path = resource_path('qq轻聊.ico')
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     # 主题：跟随系统/深色/浅色（gui.theme 配置，默认跟随系统）
     setTheme(THEME_MAP.get(load_config().gui.theme, Theme.AUTO))
     window = MainWindow(emulator_mode=emulator, emulator_device=emulator_device)
+    _move_window_near_bottom_right(window)
     window.show()
+    # 首次显示后窗口装饰尺寸才完全确定，再校准一次，防止高 DPI 下偏出工作区。
+    QTimer.singleShot(0, lambda: _move_window_near_bottom_right(window))
     sys.exit(app.exec())
 
 

@@ -11,7 +11,8 @@ if not exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 goto failed
 )
-".venv\Scripts\python.exe" main.py
+rem 日常启动使用 pythonw 并立即释放 CMD，只在任务栏保留 GUI 窗口。
+start "" ".venv\Scripts\pythonw.exe" main.py
 if errorlevel 1 goto failed
 exit /b 0
 :python_missing
