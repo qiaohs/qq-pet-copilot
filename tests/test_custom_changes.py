@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import tempfile
 
 from scenarios.friend_care import FriendCareScenario
@@ -70,6 +70,25 @@ class CustomChangesTest(TestCase):
         save.assert_called_once_with('高级学园', 45)
         self.assertEqual(scen.duration_minutes, 135)
         self.assertEqual(scen._detected_duration_minutes, 45)
+
+    def test_school_continues_after_settling_stale_adventure(self):
+        """清掉遗留冒险不算完成一轮学习，不能让低优先级雇佣插队。"""
+        scen = SchoolScenario.__new__(SchoolScenario)
+        scen.times_per_day = 6
+        scen.pending = None
+        scen.defer_wait = True
+        scen.ensure_main_page = lambda: None
+        scen.goto_school = Mock(side_effect=['adventure', None])
+        attended = []
+        scen.attend_class = lambda: attended.append(True) or False
+
+        with patch('scenarios.school.load_progress', return_value=('2026-09-30', 0, {})), \
+                patch('scenarios.school.log_history'), \
+                patch('scenarios.school.count_cross') as counted:
+            self.assertTrue(scen.run(max_rounds=1))
+
+        counted.assert_called_once_with('adventure')
+        self.assertEqual(attended, [True])
 
     def test_employed_recall_notifies_only_after_successful_settlement(self):
         scen = DeviceScenario.__new__(DeviceScenario)

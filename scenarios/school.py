@@ -363,11 +363,13 @@ class SchoolScenario(DeviceScenario):
                     # 出门时等完的是别的活动（打工/冒险），计入对应次数
                     # （被雇佣在召回点 quit 时已计数）
                     count_cross(finished)
-                # 等完了一次活动，计数已变化，本轮结束，
-                # 回主页面交由执行器重新判断限制条件
-                if max_rounds and round_no >= max_rounds:
+                # 等完的是本任务（上次遗留课程）才算完成一轮学习；若只是顺手
+                # 结算了冒险/打工/被雇佣，学习本身还没执行，不能因 max_rounds=1
+                # 提前返回，否则调度器会进入 success_interval，让低优先级雇佣
+                # 抢在学习前面。此时直接继续重新进学校。
+                if finished == 'school' and max_rounds and round_no >= max_rounds:
                     return True
-                log('本轮结束，回主页面重新开始')
+                log('遗留活动处理完成，继续执行本轮学习')
                 continue
             cont = self.attend_class()
             if self.defer_wait:

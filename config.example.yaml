@@ -173,10 +173,10 @@ runner:
 # 可选任务名：care(护理) friend_care(好友护理) rest1/rest2(休息)
 #   adventure(冒险) visit(踩踩) pk(PK) hire_friend(好友雇佣) school(学习) work(打工)
 tasks:
-  order: care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work
+  order: care>friend_care>rest1>rest2>school>adventure>hire_friend>visit>pk>work
   # 主任务组（冒险/学习/打工/雇佣好友互斥，不能同时做）组内优先级：
   # > 分隔，越靠前越优先；没列出的主任务按默认顺序兜底排最后
-  main_order: school>hire_friend>adventure>work
+  main_order: school>adventure>hire_friend>work
   # 所有任务统一的失败重试间隔（秒）：设置页"任务失败重试间隔"可改，
   # 覆盖原来各任务单独的 failure_interval
   failure_interval: 1800
@@ -197,7 +197,8 @@ tasks:
     trigger: daily
     daily_times: ["09:10"]
     enabled_time_range: 00:00:00-23:59:59
-    success_interval: 60
+    # 一轮结束后立即继续冒险，不给低优先级主任务插队
+    success_interval: 0
   visit:
     enabled: true
     trigger: daily

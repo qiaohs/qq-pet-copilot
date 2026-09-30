@@ -262,10 +262,10 @@ class TaskItemConfig:
 @dataclass
 class TasksConfig:
     # 执行顺序（> 分隔，越靠前越优先）；不在 order 里的任务不调度
-    order: str = "care>friend_care>rest1>rest2>school>hire_friend>adventure>visit>pk>work"
+    order: str = "care>friend_care>rest1>rest2>school>adventure>hire_friend>visit>pk>work"
     # 主任务组（冒险/学习/打工/雇佣好友，互斥）组内优先级（> 分隔，越靠前越优先）；
     # 没列出的主任务按默认顺序兜底排最后
-    main_order: str = "school>hire_friend>adventure>work"
+    main_order: str = "school>adventure>hire_friend>work"
     # 所有任务统一的失败重试间隔（秒）：设置页"任务失败重试间隔"，
     # 覆盖各任务的 failure_interval（只保留这一个入口，避免界面改不到/漏改）
     failure_interval: int = 1800
