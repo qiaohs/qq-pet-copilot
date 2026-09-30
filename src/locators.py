@@ -218,7 +218,11 @@ LOCATORS: dict[str, dict] = {
     # 才命中，方向不能反），见 scenario.see_employed_sign / ocr.parse_employed_ratio
     # 召回按钮：OCR 定位——wait_employed_back 里 see_employed_sign 已对同一 screen 做整屏 OCR
     # （_ocr_texts_cached 缓存），这里直接复用，无需额外 dump/识别
-    'employed_come_back': {'ocr': ['现在召回', '召回']},
+    # 页面说明文字里也会出现“召回”，只在底部按钮区 OCR，避免点到正文。
+    'employed_come_back': {
+        'ocr': ['现在召回', '召回'],
+        'ocr_region': (0.82, 1.0),  # 屏幕高度比例：底部 18%
+    },
     'employed_come_back_confirm': {
         # 控件树太复杂了，走u2速度太慢
         'ocr': ['确认召回', '确定召回', '确认', '确定'],
@@ -374,11 +378,20 @@ def _locate(
     if 'ocr' in entry:
         if screen is None:
             screen = dev.screenshot()
-        results = _ocr_texts_cached(screen)
+        region = entry.get('ocr_region')
+        if region:
+            height, width = screen.shape[:2]
+            top_ratio, bottom_ratio = region
+            x1, y1 = 0, round(height * top_ratio)
+            x2, y2 = width, round(height * bottom_ratio)
+            results = _ocr_texts_cached(screen, (x1, y1, x2, y2))
+        else:
+            x1 = y1 = 0
+            results = _ocr_texts_cached(screen)
         for target in entry['ocr']:
             hit = find_text(results, target)
             if hit and hit[2] >= OCR_MIN_SCORE:
-                return hit
+                return x1 + hit[0], y1 + hit[1], hit[2]
 
     if 'rel' in entry:
         x, y = dev.rel(*entry['rel'])

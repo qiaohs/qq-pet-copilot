@@ -30,6 +30,7 @@ from src import notify
 from src.notify import BARK_ICON_URL
 from src.update_checker import _is_remote_newer
 from src.version import APP_VERSION
+from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
@@ -143,6 +144,16 @@ class CustomChangesTest(TestCase):
         args = onepush.call_args.args
         self.assertEqual(args[1], notify.RECALL_TITLE)
         self.assertIn('等到25/75', args[2])
+
+    def test_employed_recall_button_ocr_ignores_narrative_text(self):
+        screen = SimpleNamespace(shape=(1440, 720, 3))
+        dev = SimpleNamespace()
+        entry = {'ocr': ['召回'], 'ocr_region': (0.82, 1.0)}
+        with patch('src.locators._ocr_texts_cached', return_value=[
+            ('现在召回', 239, 131, 0.99),
+        ]):
+            hit = _locate(dev, entry, screen)
+        self.assertEqual(hit, (239, 131 + round(1440 * 0.82), 0.99))
 
     def test_bark_notification_uses_dedicated_icon(self):
         captured = {}
