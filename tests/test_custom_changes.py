@@ -1,6 +1,8 @@
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+import sys
+import types
 from unittest import TestCase
 from unittest.mock import Mock, patch
 import tempfile
@@ -25,6 +27,7 @@ from src.coins import read_coins_from_ocr
 from src.config import NotifyConfig, TaskItemConfig
 from src.adb.device import AdbError, Device
 from src import notify
+from src.notify import BARK_ICON_URL
 from src.update_checker import _is_remote_newer
 from src.version import APP_VERSION
 
@@ -140,6 +143,34 @@ class CustomChangesTest(TestCase):
         args = onepush.call_args.args
         self.assertEqual(args[1], notify.RECALL_TITLE)
         self.assertIn('等到25/75', args[2])
+
+    def test_bark_notification_uses_dedicated_icon(self):
+        captured = {}
+
+        class FakeNotifier:
+            def notify(self, **payload):
+                captured.update(payload)
+                return SimpleNamespace(status_code=200)
+
+        class FakeCustom:
+            pass
+
+        onepush = types.ModuleType('onepush')
+        onepush.get_notifier = lambda _provider: FakeNotifier()
+        custom = types.ModuleType('onepush.providers.custom')
+        custom.Custom = FakeCustom
+        providers = types.ModuleType('onepush.providers')
+        providers.custom = custom
+
+        with patch.dict(sys.modules, {
+            'onepush': onepush,
+            'onepush.providers': providers,
+            'onepush.providers.custom': custom,
+        }), patch('src.notify.log'):
+            self.assertTrue(notify._send_onepush(
+                '{provider: bark, key: test}', '标题', '内容'))
+
+        self.assertEqual(captured['icon'], BARK_ICON_URL)
 
     def test_gui_screenshot_uses_valid_adb_png(self):
         dev = Device.__new__(Device)

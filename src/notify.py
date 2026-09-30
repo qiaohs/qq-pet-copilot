@@ -25,6 +25,11 @@ from .progress import log
 ALERT_TITLE = '[QQ宠物助手] 需要查看'
 RECALL_TITLE = '[QQ宠物助手] 被雇佣召回完成'
 TEST_TITLE = '[QQ宠物助手] 通知测试'
+# Bark 通知专用图标；不影响 Windows Toast 的应用图标。
+BARK_ICON_URL = (
+    'https://raw.githubusercontent.com/qiaohs/qq-pet-copilot/main/'
+    'assets/bark_icon.png'
+)
 _STATE_FILE = APP_ROOT / 'runs' / 'notify_state.json'
 _STATE_LOCK = threading.Lock()
 
@@ -191,6 +196,9 @@ def _send_onepush(config_text: str, title: str, reason: str,
     try:
         notifier = get_notifier(provider)
         payload: dict = dict(cfg)
+        if provider.casefold() == 'bark' and not str(payload.get('icon', '')).strip():
+            # Bark 的 icon 是通知参数，不使用桌面应用图标；保留用户手动配置的 icon。
+            payload['icon'] = BARK_ICON_URL
         payload['title'] = title
         payload['content'] = str(reason)
         if image_path and os.path.exists(image_path):
