@@ -27,8 +27,8 @@ RECALL_TITLE = '[QQ宠物助手] 被雇佣召回完成'
 TEST_TITLE = '[QQ宠物助手] 通知测试'
 # Bark 通知专用图标；不影响 Windows Toast 的应用图标。
 BARK_ICON_URL = (
-    'https://raw.githubusercontent.com/qiaohs/qq-pet-copilot/main/'
-    'assets/bark_icon.png'
+    'https://cdn.jsdelivr.net/gh/qiaohs/qq-pet-copilot@main/'
+    'assets/bark_icon.png?v=2'
 )
 _STATE_FILE = APP_ROOT / 'runs' / 'notify_state.json'
 _STATE_LOCK = threading.Lock()
