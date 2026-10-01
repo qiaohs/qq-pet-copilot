@@ -30,7 +30,11 @@ class EmployedScenario(DeviceScenario):
         非阻塞：到召回条件（employed.action 策略）就召回；没到就回主页面，
         按 employed.interval_seconds 间隔再来检查，中间调度器可以跑其他任务。
         """
-        log(f'被雇佣检查: 出门查看是否被雇佣中（处理方式: {self.cfg.employed.action}）')
+        off_hours_mode = (self.is_employed_off_hours()
+                          or self.off_hours_employed_mode_active())
+        action = ('50/50（非被雇佣时段）' if off_hours_mode
+                  else self.cfg.employed.action)
+        log(f'被雇佣检查: 出门查看是否被雇佣中（处理方式: {action}）')
         self.ensure_main_page()
         self.leave_home()
         # 出门后活动面板有几秒加载延迟，多检测几轮再下结论
