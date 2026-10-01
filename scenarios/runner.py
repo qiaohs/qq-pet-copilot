@@ -328,10 +328,6 @@ class Runner:
         ec = self.school.cfg.employed
         if not ec.enabled or self._deferred('被雇佣'):
             return False
-        last = self._employed_last_check
-        interval = max(1, int(getattr(ec, 'interval_seconds', 60) or 60))
-        if last is not None and datetime.now() < last + timedelta(seconds=interval):
-            return False
         try:
             start, end = parse_time_range(ec.time_range, 'employed.time_range')
         except ValueError as e:
@@ -341,7 +337,17 @@ class Runner:
             return False
         self._ec_bad_range_logged = False
         in_window = in_time_range(datetime.now().time(), start, end)
-        return in_window or bool(getattr(ec, 'off_hours_recall', True))
+        if not in_window and not bool(getattr(ec, 'off_hours_recall', True)):
+            return False
+        interval_key = ('interval_seconds' if in_window
+                        else 'off_hours_interval_seconds')
+        interval_default = 60 if in_window else 480
+        interval = max(1, int(getattr(ec, interval_key, interval_default)
+                              or interval_default))
+        last = self._employed_last_check
+        if last is not None and datetime.now() < last + timedelta(seconds=interval):
+            return False
+        return True
 
     def employed_window_active(self) -> bool:
         """被雇佣时间段是否生效中（开关打开且当前在时间段内）：

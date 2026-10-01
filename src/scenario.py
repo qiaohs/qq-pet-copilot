@@ -404,8 +404,9 @@ class DeviceScenario:
         except (TypeError, ValueError):
             return False
         now = datetime.now().time()
-        in_window = (start <= now <= end if start <= end
-                     else now >= start or now <= end)
+        # 与调度器一致使用左闭右开区间；结束时刻起算非被雇佣时段。
+        in_window = (start <= now < end if end > start
+                     else now >= start or now < end)
         return not in_window
 
     def notify_off_hours_employed_once(self) -> bool:

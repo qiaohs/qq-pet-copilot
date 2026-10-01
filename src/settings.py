@@ -83,6 +83,7 @@ DEFAULTS = {
     'employed.time_range': '19:31-23:59',
     'employed.interval_seconds': 60,
     'employed.off_hours_recall': True,
+    'employed.off_hours_interval_seconds': 480,
     'employed.action': '等到25/75（小于45min）',
     'recover.emulator_restart_cmd': '',
     'notify.employed_recall': True,
@@ -208,7 +209,8 @@ def validate_field(key: str, value):
             return (True, int(value)) if 0 <= int(value) <= 99999 else (False, default)
         except (TypeError, ValueError):
             return False, default
-    if key in ('employed.interval_seconds', 'hire_friend.interval_seconds',
+    if key in ('employed.interval_seconds', 'employed.off_hours_interval_seconds',
+               'hire_friend.interval_seconds',
                'friend_care.interval_seconds', 'care.interval_seconds'):
         # 调度间隔至少 1 秒（0 会变成无间隔连续调度）
         try:
