@@ -2,7 +2,8 @@
 """被雇佣检查场景：出门检测是否"被雇佣中"，是则按 employed.action 召回处理。
 
 调度由执行器负责：employed.enabled 开关 + employed.time_range 时间段 +
-employed.interval_seconds 检查间隔（默认 60 秒出门检查一次）；
+employed.interval_seconds 检查间隔（默认 60 秒出门检查一次）；开启
+employed.off_hours_recall 后，非时间段也会巡检，按 50/50 召回并通知；
 被雇佣时间段内主任务（冒险/学习/打工/雇佣好友）不触发。
 
 召回判定/动作复用基类：employed_recall_ready 单次判定是否到召回时机
@@ -36,7 +37,12 @@ class EmployedScenario(DeviceScenario):
         for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
             screen = self.screen()
             if self.see('employed_in', screen):
-                if self.employed_recall_ready(screen):
+                off_hours = self.is_employed_off_hours()
+                if off_hours:
+                    self.notify_off_hours_employed_once()
+                if self.employed_recall_ready(
+                        screen,
+                        off_hours=off_hours or self.off_hours_employed_mode_active()):
                     self._recall_employed()
                 else:
                     log('仍在被雇佣中，未到召回时机，回主页面（间隔后再检查）')
@@ -45,5 +51,6 @@ class EmployedScenario(DeviceScenario):
             if attempt < BUSY_GATE_ATTEMPTS:
                 time.sleep(0.5)
         log('未被雇佣')
+        self.clear_off_hours_employed_notice()
         self.ensure_main_page()
         return True

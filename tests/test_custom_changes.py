@@ -28,6 +28,7 @@ from src.config import NotifyConfig, TaskItemConfig
 from src.adb.device import AdbError, Device
 from src import notify
 from src.notify import BARK_ICON_URL
+from src.ocr import parse_employed_half_ratio
 from src.update_checker import _is_remote_newer
 from src.version import APP_VERSION
 from src.locators import _locate
@@ -114,6 +115,38 @@ class CustomChangesTest(TestCase):
             scen._recall_employed()
         counted.assert_called_once_with('employed')
         sent.assert_called_once_with('立刻召回')
+
+    def test_employed_half_ratio_parser_accepts_only_near_50_50(self):
+        def ocr(employer, employed, employer_pct, employed_pct):
+            return [
+                (employer, 200, 100, 0.99),
+                (employed, 500, 100, 0.99),
+                (f'{employer_pct}%', 200, 150, 0.99),
+                (f'{employed_pct}%', 500, 150, 0.99),
+            ]
+
+        self.assertIsNotNone(parse_employed_half_ratio(
+            ocr('雇佣者', '被雇佣者', 50, 50)))
+        self.assertIsNone(parse_employed_half_ratio(
+            ocr('雇佣者', '被雇佣者', 25, 75)))
+
+    def test_off_hours_employment_uses_50_50_and_notifies_once(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(
+            enabled=True, off_hours_recall=True, time_range='20:00-23:00',
+            action='立刻召回'))
+        scen.see_employed_half_sign = Mock(return_value=(1, 1, 0.9))
+        DeviceScenario.clear_off_hours_employed_notice()
+        with patch('src.scenario.datetime') as clock, \
+                patch('src.scenario.send_off_hours_employed', return_value=True) as sent:
+            clock.now.return_value = datetime(2026, 10, 1, 14, 35)
+            clock.strptime.side_effect = datetime.strptime
+            self.assertTrue(scen.is_employed_off_hours())
+            self.assertTrue(scen.employed_recall_ready(object()))
+            self.assertTrue(scen.notify_off_hours_employed_once())
+            self.assertFalse(scen.notify_off_hours_employed_once())
+            sent.assert_called_once_with()
+        DeviceScenario.clear_off_hours_employed_notice()
 
     def test_critical_notification_is_persistently_cooled_down(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -214,8 +214,8 @@ LOCATORS: dict[str, dict] = {
     # wait_employed_back 防休眠会点击命中点，点中会打开规则页；
     # "被雇佣中"标题和"剩余"标签都只是文字，点击安全。
     'employed_in': {'ocr': ['被雇佣中', '雇佣中']},
-    # 召回标志不在注册表：分成比例要解析具体数值（雇佣者<=25% 且被雇佣者>=75%
-    # 才命中，方向不能反），见 scenario.see_employed_sign / ocr.parse_employed_ratio
+    # 召回标志不在注册表：正常时段解析 25/75，非时段特殊模式解析 50/50，
+    # 见 scenario.see_employed_sign / see_employed_half_sign。
     # 召回按钮：OCR 定位——wait_employed_back 里 see_employed_sign 已对同一 screen 做整屏 OCR
     # （_ocr_texts_cached 缓存），这里直接复用，无需额外 dump/识别
     # 页面说明文字里也会出现“召回”，只在底部按钮区 OCR，避免点到正文。

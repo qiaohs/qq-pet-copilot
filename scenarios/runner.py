@@ -8,7 +8,8 @@
   冒险/学习/打工/雇佣好友互斥，作为主任务组按 tasks.main_order（默认
   学习>雇佣好友>冒险>打工）统一调度，且非阻塞等待：进行中 OCR 剩余时间后
   先调度其他任务，到点再收尾计数；rest1/rest2 休息时段暂停被雇佣检查及
-  护理之外的任务，休息结束自动恢复
+  护理之外的任务，休息结束自动恢复；被雇佣的非时间段巡检由
+  employed.off_hours_recall 控制
 - legacy：老主循环调度（Runner.run），顺序写死：护理检查 -> 冒险 -> 踩踩 -> PK
   -> 好友雇佣 -> 好友护理 -> 学习/打工
 
@@ -319,8 +320,11 @@ class Runner:
         return True
 
     def employed_due(self) -> bool:
-        """是否该被雇佣检查了：已启用、当前在被雇佣时间段内、
-        距上次检查已过 employed.interval_seconds 且不在失败延后期。"""
+        """是否该被雇佣检查了：已启用、距上次检查已过间隔且不在失败延后期。
+
+        正常被雇佣时间段始终巡检；非时间段仅在 off_hours_recall 开启时巡检，
+        用于发现意外被雇佣并按 50/50 召回。
+        """
         ec = self.school.cfg.employed
         if not ec.enabled or self._deferred('被雇佣'):
             return False
@@ -336,7 +340,8 @@ class Runner:
                 self._ec_bad_range_logged = True
             return False
         self._ec_bad_range_logged = False
-        return in_time_range(datetime.now().time(), start, end)
+        in_window = in_time_range(datetime.now().time(), start, end)
+        return in_window or bool(getattr(ec, 'off_hours_recall', True))
 
     def employed_window_active(self) -> bool:
         """被雇佣时间段是否生效中（开关打开且当前在时间段内）：

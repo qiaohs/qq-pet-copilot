@@ -9,8 +9,8 @@ from .config import find_adb, load_config
 from .locators import LOCATORS, ocr_screen
 from .locators import see as locate
 from .locators import see_all as locate_all
-from .ocr import parse_employed_ratio, parse_employed_remaining
-from .notify import send_employed_recall
+from .ocr import parse_employed_half_ratio, parse_employed_ratio, parse_employed_remaining
+from .notify import send_employed_recall, send_off_hours_employed
 from .progress import (
     HIRE_FRIEND_PROGRESS_FILE,
     count_cross,
@@ -34,6 +34,10 @@ DEFER_FALLBACK_SECONDS = 15     # OCR 识别不到剩余时间时的兜底重估
 # 缩短后尽早复查，OCR 通常下一轮就能读到真实剩余并收敛到准确收尾时间
 DEFER_END_MARGIN_SECONDS = 1    # 剩余时间换算收尾时间点时加的余量（秒）
 FINISH_DETECTION_ATTEMPTS = 5   # finish_pending 出门后检测结算页/进行中状态的重试次数
+
+# 所有场景共享一次“本次非时段被雇佣”通知状态，避免主任务检测和被雇佣巡检
+# 分别创建场景对象后重复推送。看到明确的非被雇佣状态或成功召回后清零。
+_OFF_HOURS_EMPLOYED_NOTIFIED = False
 
 
 class TaskDeferred(Exception):
@@ -378,15 +382,68 @@ class DeviceScenario:
         返回 (x, y, score) 或 None。"""
         return parse_employed_ratio(ocr_screen(screen))
 
+    def see_employed_half_sign(self, screen):
+        """被雇佣面板的 50/50 附近分成终态。"""
+        return parse_employed_half_ratio(ocr_screen(screen))
+
     def see_employed_remaining(self, screen):
         """被雇佣面板剩余时间"剩余 00:44:00"：OCR 解析返回
         (剩余秒数, x, y, score) 或 None（解析不到由调用方回退到只等分成比例）。"""
         return parse_employed_remaining(ocr_screen(screen))
 
-    def employed_recall_ready(self, screen) -> bool:
+    def is_employed_off_hours(self) -> bool:
+        """是否处于配置的被雇佣时间段之外。"""
+        ec = getattr(self.cfg, 'employed', None)
+        if not ec or not bool(getattr(ec, 'enabled', False)) \
+                or not bool(getattr(ec, 'off_hours_recall', True)):
+            return False
+        try:
+            start_s, end_s = str(ec.time_range).split('-', 1)
+            start = datetime.strptime(start_s.strip(), '%H:%M').time()
+            end = datetime.strptime(end_s.strip(), '%H:%M').time()
+        except (TypeError, ValueError):
+            return False
+        now = datetime.now().time()
+        in_window = (start <= now <= end if start <= end
+                     else now >= start or now <= end)
+        return not in_window
+
+    def notify_off_hours_employed_once(self) -> bool:
+        """非时段被雇佣只通知一次，返回本次是否实际触发了通知。"""
+        global _OFF_HOURS_EMPLOYED_NOTIFIED
+        if not self.is_employed_off_hours() or _OFF_HOURS_EMPLOYED_NOTIFIED:
+            return False
+        sent = send_off_hours_employed()
+        _OFF_HOURS_EMPLOYED_NOTIFIED = True
+        log('非被雇佣时段发现被雇佣，已发送一次通知；本次被雇佣结束前不重复推送'
+            if sent else '非被雇佣时段发现被雇佣，通知未送达；本次仍不重复推送')
+        return True
+
+    @staticmethod
+    def off_hours_employed_mode_active() -> bool:
+        """当前被雇佣是否已经进入“非时段事件”模式。"""
+        return _OFF_HOURS_EMPLOYED_NOTIFIED
+
+    @staticmethod
+    def clear_off_hours_employed_notice() -> None:
+        """清除本次被雇佣通知状态，允许下一次被雇佣再次通知。"""
+        global _OFF_HOURS_EMPLOYED_NOTIFIED
+        _OFF_HOURS_EMPLOYED_NOTIFIED = False
+
+    def employed_recall_ready(self, screen, off_hours: bool | None = None) -> bool:
         """单次判定被雇佣是否到召回时机（不等待）：
+        非被雇佣时段特殊模式按 50/50 附近终态召回；
         立刻召回 总是召回；等到25/75（小于45min）剩余时间 >45 分钟直接召回；
         三种方式都在分成比例到"雇佣者<=25% 被雇佣者>=75%"终态时召回。"""
+        if off_hours is None:
+            off_hours = (self.is_employed_off_hours()
+                         or self.off_hours_employed_mode_active())
+        if off_hours:
+            sign = self.see_employed_half_sign(screen)
+            if sign:
+                log(f'非被雇佣时段检测到 50/50 召回标志 (score={sign[2]:.2f})')
+                return True
+            return False
         action = getattr(self.cfg.employed, 'action', '等到25/75')
         if action == '立刻召回':
             log('按配置"立刻召回"被雇佣宠物')
@@ -447,6 +504,7 @@ class DeviceScenario:
         else:
             log('未找到 quit 按钮，直接返回')
         count_cross('employed')  # 点完 quit 就计数
+        self.clear_off_hours_employed_notice()
         # 只有确认召回、出现结算页并完成计数后才通知，
         # 不会因 OCR 误判或中途失败发出假成功消息。
         send_employed_recall(getattr(self.cfg.employed, 'action', '按配置策略'))
@@ -469,10 +527,12 @@ class DeviceScenario:
             # 本循环全是 OCR 定位（剩余时间/分成比例/被雇佣中），
             # 不需要控件树快照（dump 一次 1~4s），只截图即可
             screen = self.screen()
+            cur = self.see('employed_in', screen)
+            if cur:
+                self.notify_off_hours_employed_once()
             if self.employed_recall_ready(screen):
                 break
             # 点击一次被雇佣画面防止设备休眠
-            cur = self.see('employed_in', screen)
             if cur:
                 self.dev.click(cur[0], cur[1])  # 防休眠点击不记日志
             now = time.monotonic()

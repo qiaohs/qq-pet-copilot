@@ -263,11 +263,14 @@ def parse_employed_ratio(
     results: list[tuple[str, int, int, float]],
     max_employer: int = 25,
     min_employed: int = 75,
+    min_employer: int = 0,
+    max_employed: int = 100,
 ) -> tuple[int, int, float] | None:
     """在 OCR 结果中解析被雇佣面板的分成比例行"雇佣者 x% / 被雇佣者 y%"。
 
-    仅当 x <= max_employer 且 y >= min_employed（宠物分成最高的终态，
-    方向不能反，75/25 不算）时命中，返回比例行中心 (x, y, 置信度)，否则 None。
+    仅当 min_employer <= x <= max_employer 且
+    min_employed <= y <= max_employed（方向不能反）时命中，返回比例行中心
+    (x, y, 置信度)，否则 None。默认参数仍是宠物分成最高的 25/75 终态。
     """
     employer = employed = None
     pcts = []
@@ -300,10 +303,24 @@ def parse_employed_ratio(
     d_pct = pct_below(employed)
     if e_pct is None or d_pct is None:
         return None
-    if e_pct <= max_employer and d_pct >= min_employed:
+    if (min_employer <= e_pct <= max_employer
+            and min_employed <= d_pct <= max_employed):
         x = (employer[0] + employed[0]) // 2
         return x, employer[1], min(employer[2], employed[2])
     return None
+
+
+def parse_employed_half_ratio(
+    results: list[tuple[str, int, int, float]],
+) -> tuple[int, int, float] | None:
+    """解析被雇佣面板的 50/50 附近终态（两边均允许 45%~55%）。"""
+    return parse_employed_ratio(
+        results,
+        max_employer=55,
+        min_employed=45,
+        min_employer=45,
+        max_employed=55,
+    )
 
 
 def parse_panel_location(

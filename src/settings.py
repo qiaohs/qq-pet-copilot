@@ -82,6 +82,7 @@ DEFAULTS = {
     'employed.enabled': False,
     'employed.time_range': '19:31-23:59',
     'employed.interval_seconds': 60,
+    'employed.off_hours_recall': True,
     'employed.action': '等到25/75（小于45min）',
     'recover.emulator_restart_cmd': '',
     'notify.employed_recall': True,
@@ -139,6 +140,7 @@ def validate_field(key: str, value):
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
     if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
+               'employed.off_hours_recall',
                'friend_navigation.stop_at_non_friend', 'lucky_bag.self_enabled',
                'lucky_bag.friend_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)
