@@ -198,6 +198,8 @@ class FriendCareConfig:
     # 好友体力/清洁护理目标；拆开配置，避免喂食过满
     energy_target: int = 70
     clean_target: int = 90
+    # OCR 投喂/洗澡结束回到好友主页后，若有“照顾一下”按钮则再点击一次
+    post_one_click_care: bool = True
     # 每轮最多沿好友列表遍历的人数；到上限后找到几个护理几个，避免为缺失好友翻完整张列表
     max_scan_count: int = 20
     # 调度间隔（秒）：每次调度只做一次护理巡检，距上次巡检至少间隔这么久才再次调度

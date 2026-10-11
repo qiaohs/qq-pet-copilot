@@ -80,6 +80,39 @@ class CustomChangesTest(TestCase):
         scen._reset_unemployed_reminder()
         self.assertIsNone(scen._unemployed_since)
 
+    def test_unemployed_reminder_switch_disables_notification(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(
+            unemployed_reminder=False, unemployed_reminder_minutes=30))
+        scen._unemployed_since = 0
+        scen._unemployed_reminded = False
+        with patch('scenarios.employed.send_unemployed_reminder') as sent:
+            scen._record_unemployed(off_hours=False, now=3600)
+        sent.assert_not_called()
+        self.assertIsNone(scen._unemployed_since)
+
+    def test_friend_post_care_one_click_switch_disables_click(self):
+        scen = FriendCareScenario.__new__(FriendCareScenario)
+        scen.cfg = SimpleNamespace(friend_care=SimpleNamespace(
+            post_one_click_care=False))
+        scen.method = 'ocr检测'
+        scen.energy_target = 70
+        scen.clean_target = 90
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='source'))
+        scen.see = Mock(return_value=(360, 1045, 1.0))
+        scen.click = Mock()
+        care = SimpleNamespace(
+            energy_threshold=0,
+            clean_threshold=0,
+            toggle_status=Mock(),
+            read_status_ready=Mock(return_value={'体力': 100, '清洁': 100}),
+            close_status=Mock(return_value=True),
+        )
+        with patch('scenarios.friend_care._FriendCare', return_value=care):
+            self.assertFalse(scen.care_friend())
+        scen.see.assert_not_called()
+        scen.click.assert_not_called()
+
     def test_failed_back_dismisses_system_update_with_later(self):
         scen = DeviceScenario.__new__(DeviceScenario)
         scen.click = Mock()

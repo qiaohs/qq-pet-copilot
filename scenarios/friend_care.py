@@ -197,7 +197,9 @@ class FriendCareScenario(VisitScenario):
             log('好友状态检查完成，状态栏未展开')
         # 这里只会由配置名单命中的好友调用，不能对遍历到的所有好友执行。
         # 投喂/洗澡回到好友主页后，若仍有“照顾一下”则顺手点击一次。
-        extra = self.see('one_click_care')
+        post_one_click = bool(getattr(
+            self.cfg.friend_care, 'post_one_click_care', True))
+        extra = self.see('one_click_care') if post_one_click else None
         if extra:
             log('好友主页发现“照顾一下”，点击后再结束该好友护理')
             self.click(extra[0], extra[1])

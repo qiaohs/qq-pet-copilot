@@ -58,6 +58,7 @@ DEFAULTS = {
     'friend_care.method': 'ocr检测',
     'friend_care.energy_target': 70,
     'friend_care.clean_target': 90,
+    'friend_care.post_one_click_care': True,
     'friend_care.max_scan_count': 20,
     'friend_care.interval_seconds': 60,
     'hire_friend.enabled': False,
@@ -142,7 +143,8 @@ def validate_field(key: str, value):
             return False, DoubleQuotedScalarString(str(default))
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
-    if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
+    if key in ('friend_care.enabled', 'friend_care.post_one_click_care',
+               'hire_friend.enabled', 'employed.enabled',
                'employed.off_hours_recall', 'employed.unemployed_reminder',
                'friend_navigation.stop_at_non_friend', 'lucky_bag.self_enabled',
                'lucky_bag.friend_enabled'):

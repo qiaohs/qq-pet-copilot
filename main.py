@@ -356,6 +356,7 @@ TASK_SETTING_FIELDS = [
     ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
     ('friend_care.energy_target', '好友喂食目标体力', 'int'),
     ('friend_care.clean_target', '好友洗澡目标清洁', 'int'),
+    ('friend_care.post_one_click_care', '护理完成后点击“照顾一下”', 'bool'),
     ('friend_care.max_scan_count', '好友护理最大遍历数', 'int'),
     ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
     ('hire_friend.enabled', '雇佣好友开关', 'bool'),
