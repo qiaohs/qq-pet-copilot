@@ -378,6 +378,8 @@ TASK_SETTING_FIELDS = [
     ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
     ('employed.off_hours_recall', '非被雇佣时段按50/50召回并通知', 'bool'),
     ('employed.off_hours_interval_seconds', '非被雇佣时段检查间隔（秒）', 'int'),
+    ('employed.unemployed_reminder', '时段内连续未被雇佣提醒', 'bool'),
+    ('employed.unemployed_reminder_minutes', '未被雇佣提醒等待（分钟）', 'int'),
 ]
 
 # 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）

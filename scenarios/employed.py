@@ -16,12 +16,40 @@ from __future__ import annotations
 
 import time
 
+from src.notify import send_unemployed_reminder
 from src.progress import log
 from src.scenario import BUSY_GATE_ATTEMPTS, DeviceScenario
 
 
 class EmployedScenario(DeviceScenario):
     """被雇佣检查：出门看一眼是否被雇佣中，是则按配置策略召回。"""
+
+    def __init__(self, dev=None):
+        super().__init__(dev)
+        self._unemployed_since: float | None = None
+        self._unemployed_reminded = False
+
+    def _reset_unemployed_reminder(self) -> None:
+        self._unemployed_since = None
+        self._unemployed_reminded = False
+
+    def _record_unemployed(self, *, off_hours: bool, now: float | None = None) -> None:
+        """记录时段内连续未被雇佣；达到阈值后本段只提醒一次。"""
+        ec = self.cfg.employed
+        if off_hours or not bool(getattr(ec, 'unemployed_reminder', True)):
+            self._reset_unemployed_reminder()
+            return
+        now = time.monotonic() if now is None else now
+        if self._unemployed_since is None:
+            self._unemployed_since = now
+            self._unemployed_reminded = False
+            return
+        minutes = max(1, int(getattr(ec, 'unemployed_reminder_minutes', 30)))
+        if not self._unemployed_reminded and now - self._unemployed_since >= minutes * 60:
+            sent = send_unemployed_reminder(minutes)
+            self._unemployed_reminded = True
+            log(f'被雇佣时段内连续 {minutes} 分钟未被雇佣，已发送提醒'
+                if sent else f'被雇佣时段内连续 {minutes} 分钟未被雇佣，提醒未送达')
 
     def run(self, max_times: int | None = None, max_rounds: int = 1) -> bool:
         """出门检查一次。无论是否检测到被雇佣都返回 True（巡检语义同好友护理：
@@ -41,6 +69,7 @@ class EmployedScenario(DeviceScenario):
         for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
             screen = self.screen()
             if self.see('employed_in', screen):
+                self._reset_unemployed_reminder()
                 off_hours = self.is_employed_off_hours()
                 if off_hours:
                     self.notify_off_hours_employed_once()
@@ -56,5 +85,6 @@ class EmployedScenario(DeviceScenario):
                 time.sleep(0.5)
         log('未被雇佣')
         self.clear_off_hours_employed_notice()
+        self._record_unemployed(off_hours=self.is_employed_off_hours())
         self.ensure_main_page()
         return True

@@ -221,12 +221,26 @@ class DeviceScenario:
         checks = max(1, int(getattr(self.cfg.schedule, 'main_page_checks', 1) or 1))
         max_attempts = self.wait_attempts(MAIN_PAGE_ATTEMPTS * checks)
         misses = 0
+        # 只有执行过返回、下一帧仍未回主页，才检查阻塞弹窗；正常路径零额外开销。
+        check_blocker = False
+        required_stat: str | None = None
         for attempt in range(1, max_attempts + 1):
             screen, source = self.snapshot()
             hit = self.see('main_sign', screen, source)
             if hit:
                 log(f'已在主页面 (score={hit[2]:.2f})')
+                if required_stat:
+                    self.care_once(required_stat=required_stat)
+                    raise StatBlocked()
                 return source
+            if check_blocker:
+                check_blocker = False
+                handled = self._handle_failed_back_blocker(screen, source)
+                if handled:
+                    if handled in ('体力', '清洁'):
+                        required_stat = handled
+                    time.sleep(CLICK_INTERVAL)
+                    continue
             misses += 1
             if misses < checks:
                 # 未达检测次数：等一下重新识别（页面可能还在加载/识别抖动）
@@ -237,11 +251,54 @@ class DeviceScenario:
                 log('未识别到主页面'
                     + (f'（连续 {checks} 次）' if checks > 1 else '')
                     + '，执行返回')
+                check_blocker = True
+                time.sleep(CLICK_INTERVAL)
+                continue
+            handled = self._handle_failed_back_blocker(screen, source)
+            if handled:
+                if handled in ('体力', '清洁'):
+                    required_stat = handled
+                time.sleep(CLICK_INTERVAL)
                 continue
             if attempt == 1 or attempt == max_attempts:
                 log(f'未识别到主页面也找不到 back，等待重试 ({attempt}/{max_attempts})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
+
+    def _handle_failed_back_blocker(self, screen=None, source=None) -> str | None:
+        """返回操作无效后处理已知阻塞页；正常导航不会调用。
+
+        返回 ``体力``/``清洁`` 表示已退出不足提示页，调用方回主页后必须护理；
+        返回 ``弹窗`` 表示已关闭手机系统弹窗；没有命中返回 None。
+        """
+        # 手机系统更新弹窗按返回键不会消失。先核对标题，避免仅凭通用按钮误点。
+        if self.see('system_software_update', screen, source):
+            later = self.see('system_update_later', screen, source)
+            if later:
+                log('返回无效：检测到手机“软件更新”弹窗，点击“稍后”')
+                self.click(later[0], later[1])
+                return '弹窗'
+        if self.see('system_wlan_download', screen, source):
+            cancel = self.see('system_dialog_cancel', screen, source)
+            if cancel:
+                log('返回无效：检测到“开启 WLAN 自动下载”弹窗，点击“取消”')
+                self.click(cancel[0], cancel[1])
+                return '弹窗'
+
+        # 任务面板的不足提示会顶掉开始按钮。这里不能只关闭后继续：回主页后
+        # 必须护理，并用 StatBlocked 让调度器重试当前任务。
+        for key, desc in LOW_STAT_DIALOGS.items():
+            if not self.see(key, screen, source):
+                continue
+            required_stat = '体力' if key == 'pet_low_energy' else '清洁'
+            log(f'返回无效：检测到“{desc}”，退出任务页后护理{required_stat}')
+            back = self.see('back', screen, source)
+            if back:
+                self.click(back[0], back[1])
+            else:
+                self.dev.d.press('back')
+            return required_stat
+        return None
 
     def handle_low_stat_dialog(self, source=None) -> None:
         """点 *_start 开始任务时，同时检测"体力/清洁不足"弹窗（content-desc 整句）。
@@ -262,15 +319,20 @@ class DeviceScenario:
             self.go_back(None, source)
             time.sleep(CLICK_INTERVAL)
             self.ensure_main_page()
-            self.care_once()
+            required_stat = '体力' if key == 'pet_low_energy' else '清洁'
+            self.care_once(required_stat=required_stat)
             raise StatBlocked()
 
-    def care_once(self) -> None:
+    def care_once(self, required_stat: str | None = None) -> None:
         """主页面执行一次护理检查（同调度器的护理：体力/清洁不足则喂食/洗澡，
-        或一键护理），护理完成停在主页面。"""
+        或一键护理），护理完成停在主页面。
+
+        required_stat 是游戏已经明确报告不足的项目。此时即使状态栏 OCR 临时漏掉
+        对应数值，也要执行该项护理，避免再次被同一个提示拦截。
+        """
         from scenarios.care import CareScenario
 
-        CareScenario(self.dev).check_and_care()
+        CareScenario(self.dev).check_and_care(required_stat=required_stat)
 
     def reset_select_boxes(self, drags: int = 2, source=None) -> None:
         """学习/工作三栏选择框归位：从第一框中心拖到第三框中心 drags 次。

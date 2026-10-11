@@ -258,8 +258,35 @@ LOCATORS: dict[str, dict] = {
     # ---- 体力/清洁不足弹窗 ----
     # 点开始上课/打工/冒险/PK 时，体力/清洁不足会弹整句 content-desc 提示：
     # 命中后回主页面护理一次再重试当前任务（src/scenario.py handle_low_stat_dialog）
-    'pet_low_energy': {'xpath': ['//*[@content-desc="你的宠物体力不足，请回家补充体力"]']},
-    'pet_low_clean': {'xpath': ['//*[@content-desc="你的宠物清洁值不足，请回家洗澡"]']},
+    'pet_low_energy': {'xpath': [
+        '//*[@content-desc="你的宠物体力不足，请回家补充体力"]',
+        '//*[@text="你的宠物体力不足，请回家补充体力"]',
+    ]},
+    'pet_low_clean': {'xpath': [
+        '//*[@content-desc="你的宠物清洁值不足，请回家洗澡"]',
+        '//*[@text="你的宠物清洁值不足，请回家洗澡"]',
+    ]},
+
+    # ---- 手机系统更新弹窗（仅在返回无效后的异常检查中使用） ----
+    # 必须先确认标题，再点击动作按钮，不能只凭“取消”误伤游戏内弹窗。
+    'system_software_update': {'xpath': [
+        '//*[@text="软件更新"]',
+        '//*[@content-desc="软件更新"]',
+    ]},
+    'system_update_later': {'xpath': [
+        '//*[@text="稍后"]',
+        '//*[@content-desc="稍后"]',
+    ]},
+    'system_wlan_download': {'xpath': [
+        '//*[contains(@text, "WLAN 自动下载")]',
+        '//*[contains(@text, "WLAN自动下载")]',
+        '//*[contains(@content-desc, "WLAN 自动下载")]',
+        '//*[contains(@content-desc, "WLAN自动下载")]',
+    ]},
+    'system_dialog_cancel': {'xpath': [
+        '//*[@text="取消"]',
+        '//*[@content-desc="取消"]',
+    ]},
 
     # ---- 照顾 ----
     # 宠物状态面板区域：care.read_status 只裁这块做 OCR（整屏/半屏太慢）；

@@ -86,6 +86,7 @@ class FriendCareScenario(VisitScenario):
         self._friend_index = 0
         self._current_friend_x = None
         self.goto_first_friend()
+        self._rewind_friend_carousel()
 
     def current_friend(self) -> tuple[str, list[tuple[str, int, int]]]:
         """返回当前好友描述和当前可见列表，并把新出现的好友并入累积名单。"""
@@ -194,6 +195,21 @@ class FriendCareScenario(VisitScenario):
             log('好友状态检查完成，已收起宠物状态')
         else:
             log('好友状态检查完成，状态栏未展开')
+        # 这里只会由配置名单命中的好友调用，不能对遍历到的所有好友执行。
+        # 投喂/洗澡回到好友主页后，若仍有“照顾一下”则顺手点击一次。
+        extra = self.see('one_click_care')
+        if extra:
+            log('好友主页发现“照顾一下”，点击后再结束该好友护理')
+            self.click(extra[0], extra[1])
+            for attempt in range(1, ONE_CLICK_PAY_RETRIES + 1):
+                time.sleep(CLICK_INTERVAL)
+                pay = self.see('one_click_pay')
+                if pay:
+                    log('“照顾一下”出现支付确认，点击“支付并护理”')
+                    self.click(pay[0], pay[1])
+                    time.sleep(CLICK_INTERVAL)
+                    break
+            cared = True
         return cared
 
     # ---- 入口 ----

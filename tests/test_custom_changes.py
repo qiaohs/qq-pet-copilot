@@ -6,8 +6,10 @@ import types
 from unittest import TestCase
 from unittest.mock import Mock, patch
 import tempfile
+import numpy as np
 
 from scenarios.friend_care import FriendCareScenario
+from scenarios.employed import EmployedScenario
 from scenarios.school import SchoolScenario, infer_class_minutes, parse_duration_candidates
 from scenarios.hire_friend import FriendHireScenario, FriendUnavailable
 from scenarios.friend_features import (
@@ -19,7 +21,8 @@ from scenarios.friend_features import (
 )
 from scenarios.visit import VisitScenario
 from main import ScrcpyContainer
-from src.scenario import DeviceScenario, TaskDeferred
+from src.scenario import DeviceScenario, StatBlocked, TaskDeferred
+from scenarios.work import WorkScenario
 from scenarios.care import CareScenario
 from scenarios.runner import TaskQueueRunner, _QueueTask
 from src import progress, progress_store
@@ -35,6 +38,132 @@ from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
+    def test_selected_friend_uses_yellow_card_highlight(self):
+        screen = np.zeros((1440, 720, 3), dtype=np.uint8)
+        # 中间好友卡片的黄色选中框；坐标对应真机底部轮播。
+        screen[1150:1361, 169:174] = (255, 200, 0)
+        screen[1150:1361, 365:370] = (255, 200, 0)
+        screen[1150:1155, 169:370] = (255, 200, 0)
+        screen[1356:1361, 169:370] = (255, 200, 0)
+        visible = [
+            ('好友 qq8', 78, 1255),
+            ('好友 qq2', 269, 1255),
+            ('好友 qq6', 465, 1255),
+        ]
+        selected = VisitScenario._selected_friend_by_highlight(visible, screen)
+        self.assertEqual(selected, visible[1])
+
+    def test_graduation_popup_uses_android_back_and_confirms_closed(self):
+        scen = SchoolScenario.__new__(SchoolScenario)
+        scen.dev = SimpleNamespace(
+            d=SimpleNamespace(press=Mock()),
+            hierarchy=Mock(return_value='closed'),
+        )
+        scen.see = lambda name, source=None: None
+        scen.ensure_main_page = Mock()
+        with patch('scenarios.school.time.sleep'):
+            scen._close_graduation()
+        scen.dev.d.press.assert_called_once_with('back')
+        scen.ensure_main_page.assert_called_once_with()
+
+    def test_employed_window_unemployed_reminder_sends_once_per_streak(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(
+            unemployed_reminder=True, unemployed_reminder_minutes=30))
+        scen._unemployed_since = None
+        scen._unemployed_reminded = False
+        with patch('scenarios.employed.send_unemployed_reminder', return_value=True) as sent:
+            scen._record_unemployed(off_hours=False, now=0)
+            scen._record_unemployed(off_hours=False, now=1800)
+            scen._record_unemployed(off_hours=False, now=3600)
+        sent.assert_called_once_with(30)
+        scen._reset_unemployed_reminder()
+        self.assertIsNone(scen._unemployed_since)
+
+    def test_failed_back_dismisses_system_update_with_later(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.click = Mock()
+        hits = {
+            'system_software_update': (10, 10, 1.0),
+            'system_update_later': (360, 1100, 1.0),
+        }
+        scen.see = lambda name, *_args: hits.get(name)
+
+        self.assertEqual(
+            scen._handle_failed_back_blocker(object(), object()), '弹窗')
+        scen.click.assert_called_once_with(360, 1100)
+
+    def test_failed_back_dismisses_wlan_download_with_cancel(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.click = Mock()
+        hits = {
+            'system_wlan_download': (10, 10, 1.0),
+            'system_dialog_cancel': (220, 1100, 1.0),
+        }
+        scen.see = lambda name, *_args: hits.get(name)
+
+        self.assertEqual(
+            scen._handle_failed_back_blocker(object(), object()), '弹窗')
+        scen.click.assert_called_once_with(220, 1100)
+
+    def test_low_energy_found_after_failed_back_cares_then_retries(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.cfg = SimpleNamespace(schedule=SimpleNamespace(
+            main_page_checks=1, ui_wait_multiplier=1))
+        sources = iter(('blocked', 'blocked_after_back', 'main'))
+        scen.snapshot = lambda: (object(), next(sources))
+        scen.go_back = Mock(return_value=True)
+        scen._handle_failed_back_blocker = Mock(return_value='体力')
+        scen.care_once = Mock()
+
+        def see(name, _screen=None, source=None):
+            if name == 'main_sign' and source == 'main':
+                return 10, 10, 1.0
+            return None
+
+        scen.see = see
+        with patch('src.scenario.time.sleep'), self.assertRaises(StatBlocked):
+            scen.ensure_main_page()
+
+        scen.go_back.assert_called_once()
+        scen._handle_failed_back_blocker.assert_called_once()
+        scen.care_once.assert_called_once_with(required_stat='体力')
+
+    def test_work_recovers_new_low_stat_prompt_before_reopening_panel(self):
+        scen = WorkScenario.__new__(WorkScenario)
+        scen.dev = SimpleNamespace(hierarchy=lambda: 'source')
+        scen.handle_low_stat_dialog = Mock(side_effect=StatBlocked)
+        scen.see = Mock()
+
+        with self.assertRaises(StatBlocked):
+            scen._recover_work_start()
+
+        scen.handle_low_stat_dialog.assert_called_once_with('source')
+        scen.see.assert_not_called()
+
+    def test_explicit_low_energy_forces_feed_when_ocr_misses_value(self):
+        scen = CareScenario.__new__(CareScenario)
+        scen.cfg = SimpleNamespace(
+            lucky_bag=SimpleNamespace(self_enabled=False))
+        scen.method = 'ocr检测'
+        scen.energy_threshold = 50
+        scen.clean_threshold = 87
+        scen._status_panel_visible = True
+        scen.ensure_main_page = Mock()
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='source'))
+        scen.toggle_status = Mock()
+        scen.read_status_ready = Mock(return_value={'清洁': 100, '心情': 100})
+        scen.feed = Mock()
+        scen.shower = Mock()
+        scen.exit_care_mode = Mock(return_value='source')
+        scen.close_status = Mock(return_value=True)
+
+        with patch('scenarios.care.update_status'):
+            scen.check_and_care(required_stat='体力')
+
+        scen.feed.assert_called_once_with('source')
+        scen.shower.assert_not_called()
+
     def test_custom_version_detects_official_072_update(self):
         self.assertEqual(APP_VERSION, '0.7.1c')
         self.assertFalse(_is_remote_newer(APP_VERSION, '0.7.1'))

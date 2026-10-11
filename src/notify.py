@@ -25,6 +25,7 @@ from .progress import log
 ALERT_TITLE = '[QQ宠物助手] 需要查看'
 RECALL_TITLE = '[QQ宠物助手] 被雇佣召回完成'
 OFF_HOURS_EMPLOYED_TITLE = '[QQ宠物助手] 非时段被雇佣'
+UNEMPLOYED_REMINDER_TITLE = '[QQ宠物助手] 等待被雇佣'
 TEST_TITLE = '[QQ宠物助手] 通知测试'
 # Bark 通知专用图标；不影响 Windows Toast 的应用图标。
 BARK_ICON_URL = (
@@ -82,6 +83,15 @@ def send_off_hours_employed() -> bool:
         cfg,
         OFF_HOURS_EMPLOYED_TITLE,
         '在配置的被雇佣时段之外发现宠物被雇佣，本次将等到分成 50/50 后召回。',
+    )
+
+
+def send_unemployed_reminder(minutes: int) -> bool:
+    """被雇佣时段内持续空闲达到阈值时提醒；每段只发一次由场景管理。"""
+    return _send_notification(
+        _load_notify_config(),
+        UNEMPLOYED_REMINDER_TITLE,
+        f'被雇佣时段内已连续 {minutes} 分钟未检测到被雇佣，请检查是否需要安排雇佣。',
     )
 
 

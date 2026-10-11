@@ -311,6 +311,9 @@ class EmployedConfig:
     off_hours_recall: bool = True
     # 非被雇佣时段巡检间隔（秒），默认 8 分钟；正常时段仍使用 interval_seconds
     off_hours_interval_seconds: int = 480
+    # 被雇佣时段内连续未发现被雇佣的提醒；每段空闲只提醒一次，发现被雇佣后重新计时
+    unemployed_reminder: bool = True
+    unemployed_reminder_minutes: int = 30
     # 被雇佣后处理：等到25/75（分成比例到 雇佣者<=25% 被雇佣者>=75% 才召回，收益最高）/
     # 等到25/75（小于45min）（同左，但面板剩余时间 >45 分钟立即召回，<=45 分钟继续等到25/75）/
     # 立刻召回（进被雇佣面板直接点"现在召回"）

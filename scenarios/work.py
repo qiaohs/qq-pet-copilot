@@ -278,12 +278,15 @@ class WorkScenario(DeviceScenario):
         raise RuntimeError(f'点击 {max_tries} 次仍未关闭雇佣页面')
 
     def _recover_work_start(self) -> None:
-        """work_start 未出现（被"去照顾一下"弹窗挡住）时的恢复流程。
+        """work_start 未出现（被体力/清洁不足提示挡住）时的恢复流程。
 
-        点"去照顾一下" -> 一键护理（含"支付并护理"确认）-> back 回工作面板，
-        之后 work_start 应重新出现。
+        新版提示只有“请回家补充体力/洗澡”的禁用提示条，没有“去照顾一下”
+        按钮：先交给统一不足处理，回主页护理后抛 StatBlocked 让调度器重试。
+        旧版仍走“去照顾一下” -> 一键护理 -> back 回工作面板。
         """
-        care = self.see('go_care')
+        source = self.dev.hierarchy()
+        self.handle_low_stat_dialog(source)
+        care = self.see('go_care', source=source)
         if care:
             log(f'检测到"去照顾一下"，点击 ({care[0]}, {care[1]})')
             self.click(care[0], care[1])

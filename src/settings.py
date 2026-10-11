@@ -84,6 +84,8 @@ DEFAULTS = {
     'employed.interval_seconds': 60,
     'employed.off_hours_recall': True,
     'employed.off_hours_interval_seconds': 480,
+    'employed.unemployed_reminder': True,
+    'employed.unemployed_reminder_minutes': 30,
     'employed.action': '等到25/75（小于45min）',
     'recover.emulator_restart_cmd': '',
     'notify.employed_recall': True,
@@ -141,7 +143,7 @@ def validate_field(key: str, value):
     if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
         return True, str(value).strip()
     if key in ('friend_care.enabled', 'hire_friend.enabled', 'employed.enabled',
-               'employed.off_hours_recall',
+               'employed.off_hours_recall', 'employed.unemployed_reminder',
                'friend_navigation.stop_at_non_friend', 'lucky_bag.self_enabled',
                'lucky_bag.friend_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)
@@ -215,6 +217,11 @@ def validate_field(key: str, value):
         # 调度间隔至少 1 秒（0 会变成无间隔连续调度）
         try:
             return (True, value) if int(value) >= 1 else (False, default)
+        except (TypeError, ValueError):
+            return False, default
+    if key == 'employed.unemployed_reminder_minutes':
+        try:
+            return (True, int(value)) if 1 <= int(value) <= 1440 else (False, default)
         except (TypeError, ValueError):
             return False, default
     if key in ('notify.win_toast', 'notify.employed_recall', 'notify.critical_errors') \

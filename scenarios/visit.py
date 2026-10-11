@@ -30,6 +30,9 @@ import os
 import sys
 import time
 
+import cv2
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import opener
@@ -53,6 +56,7 @@ STEP_RETRIES = 5  # 切换好友后踩踩按钮有几秒加载延迟，重试次
 FRIEND_LIST_RETRIES = 5  # 好友页左侧列表可能晚于踩踩按钮出现
 FRIEND_SWITCH_CLICK_RETRIES = 2  # 好友轮播点击偶尔未生效，验证失败后重点一次
 FRIEND_SWITCH_POLL_RETRIES = 2  # 每次点击后等待轮播位置/名单实际变化
+FRIEND_REWIND_LIMIT = 12  # 进入好友页后最多向左回溯次数，防止游戏保留了上次选中位置
 
 PROGRESS_FILE = VISIT_PROGRESS_FILE
 
@@ -168,6 +172,76 @@ class VisitScenario(DeviceScenario):
             raise RuntimeError('好友列表连续多次为空，无法判断是否还有好友')
         return []
 
+    @staticmethod
+    def _selected_friend_by_highlight(
+            visible: list[tuple[str, int, int]], screen) -> tuple[str, int, int] | None:
+        """用卡片黄色描边识别当前选中的好友。
+
+        不能再假定进入好友页后总是选中最左一项：游戏会保留上次选中的
+        中间卡片。这里只比较每张卡片四周窄边的黄色像素，避免头像、等级
+        和右下角“加好友”色块干扰；置信度不足时返回 None，由旧逻辑兜底。
+        """
+        if screen is None or len(visible) < 2:
+            return visible[0] if len(visible) == 1 else None
+        image = np.asarray(screen)
+        if image.ndim != 3 or image.shape[2] < 3:
+            return None
+        hsv = cv2.cvtColor(image[:, :, :3], cv2.COLOR_RGB2HSV)
+        yellow = cv2.inRange(hsv, np.array((15, 110, 130)), np.array((42, 255, 255)))
+        scores: list[tuple[int, tuple[str, int, int]]] = []
+        height, width = yellow.shape
+        for item in visible:
+            _, x, y = item
+            x1, x2 = max(0, x - 100), min(width, x + 101)
+            y1, y2 = max(0, y - 105), min(height, y + 106)
+            roi = yellow[y1:y2, x1:x2]
+            if roi.size == 0:
+                continue
+            edge = np.zeros_like(roi)
+            thickness = min(14, max(3, min(roi.shape) // 5))
+            edge[:thickness, :] = roi[:thickness, :]
+            edge[-thickness:, :] = roi[-thickness:, :]
+            edge[:, :thickness] = roi[:, :thickness]
+            edge[:, -thickness:] = roi[:, -thickness:]
+            scores.append((int(np.count_nonzero(edge)), item))
+        if not scores:
+            return None
+        scores.sort(key=lambda pair: pair[0], reverse=True)
+        best_score, best = scores[0]
+        second_score = scores[1][0] if len(scores) > 1 else 0
+        if best_score < 350 or (second_score and best_score < second_score * 1.3):
+            return None
+        return best
+
+    def _rewind_friend_carousel(self) -> list[tuple[str, int, int]]:
+        """把好友轮播回到第一项，并按真实选中项初始化遍历状态。
+
+        游戏可能保留上次选中的好友。若直接把最左项当当前好友，会造成
+        名称错位，随后点击实际已选中的中间卡片时被误判为“轮播未移动”。
+        """
+        limit = self.wait_attempts(FRIEND_REWIND_LIMIT)
+        for attempt in range(limit + 1):
+            visible = self._wait_friend_items(required=True)
+            selected = self._selected_friend_by_highlight(visible, self.screen())
+            if selected is None:
+                log('好友选中描边识别不确定，按最左项继续遍历')
+                selected = min(visible, key=lambda item: item[1])
+            leftmost = min(visible, key=lambda item: item[1])
+            if selected[1] <= leftmost[1] + 20:
+                self._friends = [desc for desc, _, _ in visible if desc]
+                self._friend_index = 0
+                self._current_friend_x = leftmost[1]
+                log(f'好友轮播起点已确认: {leftmost[0]}')
+                return visible
+            left = [item for item in visible if item[1] < selected[1] - 20]
+            if not left or attempt >= limit:
+                raise RuntimeError('好友轮播无法回到第一项')
+            target = max(left, key=lambda item: item[1])
+            log(f'当前选中 {selected[0]}，向左回溯到 {target[0]}')
+            self.click(target[1], target[2])
+            time.sleep(CLICK_INTERVAL)
+        raise RuntimeError('好友轮播无法回到第一项')
+
     def next_friend(self, visible: list[tuple[str, int, int]] | None = None) -> bool:
         """切换到下一个好友：按累积名单顺序点下一个。
 
@@ -239,10 +313,22 @@ class VisitScenario(DeviceScenario):
                                        if item_desc == target]
                         target_x = (min(matching_xs, key=lambda item_x: abs(item_x - center_x))
                                     if matching_xs else None)
+                        try:
+                            selected_screen = self.screen()
+                        except (AttributeError, RuntimeError):
+                            selected_screen = None
+                        selected_after = self._selected_friend_by_highlight(
+                            after, selected_screen)
+                        selected_target = bool(
+                            selected_after and selected_after[0] == target
+                            and (current_x is None
+                                 or abs(selected_after[1] - current_x) >= 20))
                         # 正常选中后目标会向轮播中央移动约 50px，或列表滑出/滑入一人。
+                        # 某些布局只改变黄色选中框、卡片完全不移动，也要算成功。
                         # 忽略控件边界 1-2px 的轻微抖动，避免把未生效误当作已切换。
                         moved = (after_names != before_names
-                                 or (target_x is not None and abs(target_x - x) >= 20))
+                                 or (target_x is not None and abs(target_x - x) >= 20)
+                                 or selected_target)
                         if not moved:
                             continue
                         appeared = [item_desc for item_desc, _, _ in after
@@ -252,7 +338,8 @@ class VisitScenario(DeviceScenario):
                             log(f'新增好友({len(appeared)}，累计 {len(self._friends)}): '
                                 + ', '.join(appeared))
                         self._friend_index = next_index
-                        self._current_friend_x = target_x
+                        self._current_friend_x = (selected_after[1]
+                                                  if selected_target else target_x)
                         return True
                     if attempt < click_attempts:
                         log(f'目标 {target} 点击后轮播未移动，重新点击 '
@@ -280,8 +367,10 @@ class VisitScenario(DeviceScenario):
         """
         self._friends = []        # 累积好友名单（content-desc），只增不减
         self._friend_index = 0    # 访问进入时默认第一个好友
+        self._current_friend_x = None
         self._exp_handled = False  # 本轮是否处理过经验照顾（点击/判定完成）
         self.goto_first_friend()
+        self._rewind_friend_carousel()
         exp_today, exp_done, exp_history = load_exp_daily(quiet=True)
         while True:
             if not max_times or done < max_times:

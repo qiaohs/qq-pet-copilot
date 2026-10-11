@@ -116,9 +116,8 @@ class SchoolScenario(DeviceScenario):
             raise ValueError('school.duration_minutes 必须在 1-1440 分钟之间')
         self.duration_candidates = parse_duration_candidates(
             getattr(self.cfg.school, 'duration_candidates', '45,135'))
-        # 毕业处理防循环标志：关闭毕业面板后重新进学校仍出现毕业标志时抛异常，
-        # 走重试链而不是无限"毕业->回主页面->再进"空转；成功看到 school_start 时重置
-        self._graduated_once = False
+        # 某些阶段毕业后会连续出现证书；允许稳妥关闭几次，但仍设上限防空转。
+        self._graduation_close_count = 0
         self._class_started_at: float | None = None
         self._class_duration_detected = False
         self._detected_duration_minutes: int | None = None
@@ -152,12 +151,12 @@ class SchoolScenario(DeviceScenario):
                 # 不出现时不能干等到超时，同帧检测命中则回主页面护理一次
                 self.handle_low_stat_dialog(source)
                 if self.see('school_start', None, source):
-                    self._graduated_once = False
+                    self._graduation_close_count = 0
                     return None
                 if self.see('school_graduated', None, source):
-                    if self._graduated_once:
-                        raise RuntimeError('毕业面板关闭后重新进学校仍出现毕业标志')
-                    self._graduated_once = True
+                    self._graduation_close_count += 1
+                    if self._graduation_close_count > 3:
+                        raise RuntimeError('连续关闭 3 次毕业弹窗后仍出现毕业标志')
                     self._close_graduation()
                     return 'graduated'
                 school = self.see('school', None, source)
@@ -181,17 +180,21 @@ class SchoolScenario(DeviceScenario):
             raise
 
     def _close_graduation(self) -> None:
-        """毕业面板：点"关闭"按钮，再点两次 back 回主页面。"""
-        log('检测到毕业标志（去找同学玩），点关闭并回主页面重新进学校')
-        close = self.see('school_graduate_close')
-        if not close:
-            raise RuntimeError('毕业面板未找到"关闭"按钮')
-        self.click(close[0], close[1])
-        time.sleep(CLICK_INTERVAL)
-        for _ in range(2):
-            if not self.go_back():
-                raise RuntimeError('毕业面板关闭后未找到 back 按钮')
+        """毕业证书弹窗：使用 Android 系统返回键关闭，再确认回到主页面。
+
+        弹窗底部的圆形关闭按钮可能被手机导航栏遮挡，不能依赖坐标点击。
+        """
+        log('检测到毕业标志（去找同学玩），使用手机系统返回键关闭毕业弹窗')
+        for attempt in range(1, 4):
+            self.dev.d.press('back')
             time.sleep(CLICK_INTERVAL)
+            source = self.dev.hierarchy()
+            if not self.see('school_graduate_close', source=source):
+                log('毕业弹窗已关闭')
+                self.ensure_main_page()
+                return
+            log(f'毕业弹窗仍存在，再按一次系统返回 ({attempt}/3)')
+        raise RuntimeError('连续按系统返回后毕业弹窗仍未关闭')
 
     def select_course(self) -> None:
         """选课：先 OCR 上半屏识别学园阶段决定点哪个框，
@@ -342,7 +345,7 @@ class SchoolScenario(DeviceScenario):
                     # 毕业面板已关闭并回主页面：不计数也不算一轮（毕业不是上课），
                     # 立即重新进学校选下一阶段课程，不等下一轮调度（否则要等
                     # success_interval 才重试）；防循环由 goto_school 的
-                    # _graduated_once 保证（连续毕业抛异常走重试链）
+                    # 毕业弹窗关闭次数上限保证
                     log('毕业处理完成，重新进学校')
                     continue
                 if self.pending is not None:

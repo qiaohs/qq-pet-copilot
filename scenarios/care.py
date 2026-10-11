@@ -575,9 +575,13 @@ class CareScenario(DeviceScenario):
         self._status_panel_visible = False
         return True
 
-    def check_and_care(self) -> None:
+    def check_and_care(self, required_stat: str | None = None) -> None:
         """检查一次体力/清洁，低于阈值则喂食/洗澡，最后收起状态面板。
-        护理方式为"一键护理"时不读状态：主页面有一键护理按钮就点，然后直接结束。"""
+        护理方式为"一键护理"时不读状态：主页面有一键护理按钮就点，然后直接结束。
+
+        required_stat 用于处理任务页明确出现“体力/清洁不足”、但状态数字恰好被
+        OCR 漏掉的情况；只强制护理游戏明确报告的那一项。
+        """
         self.ensure_main_page()
         if getattr(getattr(self.cfg, 'lucky_bag', None), 'self_enabled', True):
             claim_lucky_bag(self, '自己')
@@ -603,14 +607,22 @@ class CareScenario(DeviceScenario):
                       coins=status.get('金币'))
         cared = False
         energy = status.get('体力')
-        if energy is not None and energy < self.energy_threshold:
-            log(f'体力 {energy} < 阈值 {self.energy_threshold}，需要喂食')
+        if ((energy is not None and energy < self.energy_threshold)
+                or (energy is None and required_stat == '体力')):
+            if energy is None:
+                log('游戏已提示体力不足，状态数值未识别，强制喂食')
+            else:
+                log(f'体力 {energy} < 阈值 {self.energy_threshold}，需要喂食')
             self.feed(source)
             cared = True
             source = self.dev.hierarchy()
         clean = status.get('清洁')
-        if clean is not None and clean < self.clean_threshold:
-            log(f'清洁 {clean} < 阈值 {self.clean_threshold}，需要洗澡')
+        if ((clean is not None and clean < self.clean_threshold)
+                or (clean is None and required_stat == '清洁')):
+            if clean is None:
+                log('游戏已提示清洁不足，状态数值未识别，强制洗澡')
+            else:
+                log(f'清洁 {clean} < 阈值 {self.clean_threshold}，需要洗澡')
             self.shower(source)
             cared = True
             source = self.dev.hierarchy()
