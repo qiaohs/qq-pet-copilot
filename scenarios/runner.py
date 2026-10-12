@@ -123,7 +123,12 @@ RECOVERY_RESET_AFTER = 3600
 # 支线任务（冒险/踩踩/PK/好友护理/好友雇佣）多次重试仍失败后的延后重试间隔（秒）：
 # 参考 qq-farm-copilot 的 failure_interval 队列机制——失败任务重新排期，
 # 调度器先执行其他任务，到点后 due() 自动放行重试
-SIDE_TASK_RETRY_DELAY = 1800
+EMPLOYED_RETRY_SECONDS = 120
+
+
+def failure_retry_seconds(failures: int) -> int:
+    """按完整失败轮次退避：前两轮 2 分钟，第 3-4 轮 10 分钟，之后 1 小时。"""
+    return 120 if failures <= 2 else 600 if failures <= 4 else 3600
 
 
 class ScenarioFailed(Exception):
@@ -398,15 +403,20 @@ class Runner:
           由调度循环重新排期延后重试，先执行其他任务。
         场景 run() 正常返回 False（达当天上限等）不算失败。
         """
+        def run_and_reset():
+            result = self._run_round(scen)
+            self._reset_failure_streak(name)
+            return result
+
         try:
-            return self._run_round(scen)
+            return run_and_reset()
         except StatBlocked:
             # 开始任务时体力/清洁不足弹窗：handle_low_stat_dialog 已回主页面护理
             # 一次，立即重试当前任务一次（不截图/不重启/不算失败）；再被拦截则
             # 按常规失败分流（护理一次没解决，交给失败退避/告警）
             log(f'{name}: 体力/清洁不足已护理，重试当前任务')
             try:
-                return self._run_round(scen)
+                return run_and_reset()
             except StatBlocked:
                 last = f'{name} 护理后重试仍被体力/清洁不足拦截'
                 log(last)
@@ -419,13 +429,13 @@ class Runner:
             log(f'{name} 执行异常: {e}，回主页面重试一次')
             self._capture_failure_image('retry1')  # 截图记录现场，不发告警
         try:
-            return self._run_round(scen)
+            return run_and_reset()
         except Exception as e:
             log(f'{name} 回主页面重试仍失败: {e}，尝试重启设备恢复')
             self._capture_failure_image('retry2')  # 截图记录现场，不发告警
         if self.recover():
             try:
-                return self._run_round(scen)
+                return run_and_reset()
             except Exception as e:
                 last = f'{name} 恢复后重试仍失败: {e}'
         else:
@@ -434,12 +444,28 @@ class Runner:
             self._alert_and_exit(last, f'fatal_task:{name}')
         raise ScenarioFailed(last)
 
+    def _reset_failure_streak(self, name: str) -> None:
+        if hasattr(self, '_failure_streaks'):
+            self._failure_streaks.pop(name, None)
+
+    def _failure_delay(self, name: str) -> int:
+        if name in ('被雇佣', '被雇佣检查'):
+            return EMPLOYED_RETRY_SECONDS
+        if not hasattr(self, '_failure_streaks'):
+            self._failure_streaks = {}
+        count = self._failure_streaks.get(name, 0) + 1
+        self._failure_streaks[name] = count
+        return failure_retry_seconds(count)
+
     def _reschedule(self, name: str) -> None:
-        """支线任务多次重试仍失败：延后 SIDE_TASK_RETRY_DELAY 秒重试
-        （参考 qq-farm-copilot 的失败重排期），先执行其他任务。"""
-        at = datetime.now() + timedelta(seconds=SIDE_TASK_RETRY_DELAY)
+        """被雇佣失败固定 2 分钟重试，其他支线按连续失败轮次逐级退避。"""
+        delay = self._failure_delay(name)
+        at = datetime.now() + timedelta(seconds=delay)
         self.retry_after[name] = at
-        log(f'{name} 多次重试仍失败，延后到 {at:%H:%M} 重试，先执行其他任务')
+        if name == '被雇佣':
+            self._employed_last_check = None  # 失败重试不能被正常巡检间隔再次推迟
+        log(f'{name} 多次重试仍失败，{delay // 60} 分钟后 '
+            f'{at:%H:%M:%S} 重试，先执行其他任务')
 
     def _wait_for_deferred(self, adventure_dead: bool) -> bool:
         """主任务（学习/打工）当天结束后，若还有延后重试的支线任务，
@@ -1392,9 +1418,7 @@ class TaskQueueRunner(Runner):
                 self.run_one(self.employed, '被雇佣检查', fatal=False)
             except ScenarioFailed as e:
                 self._notify_employed_failure(str(e))
-                at = now + timedelta(seconds=SIDE_TASK_RETRY_DELAY)
-                self.retry_after['被雇佣'] = at
-                log(f'被雇佣检查多次重试仍失败，延后到 {at:%H:%M} 重试，先执行其他任务')
+                self._reschedule('被雇佣')
                 # 中断时页面可能停在出门页，先退回主页面再调度其他任务
                 self._back_to_main('被雇佣检查失败后')
                 return
@@ -1468,10 +1492,12 @@ class TaskQueueRunner(Runner):
         return now + timedelta(seconds=secs)
 
     def _fail_task(self, task: _QueueTask, now: datetime, reason: str) -> None:
-        """任务失败退避：延后 failure_interval 秒重试，先执行其他任务。"""
-        at = now + timedelta(seconds=task.cfg.failure_interval)
+        """完整失败轮次逐级退避，从失败结束时起算，避免恢复耗时吃掉间隔。"""
+        delay = self._failure_delay(task.name)
+        at = datetime.now() + timedelta(seconds=delay)
         task.next_at = at
-        log(f'{reason}，延后到 {at:%H:%M} 重试，先执行其他任务')
+        log(f'{reason}，连续失败 {self._failure_streaks[task.name]} 轮，'
+            f'{delay // 60} 分钟后 {at:%H:%M:%S} 重试，先执行其他任务')
 
     def _back_to_main(self, stage: str) -> None:
         """支线任务中断后退回主页面（页面可能停在好友页），失败只记日志。"""

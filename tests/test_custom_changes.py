@@ -24,7 +24,7 @@ from main import ScrcpyContainer
 from src.scenario import DeviceScenario, StatBlocked, TaskDeferred
 from scenarios.work import WorkScenario
 from scenarios.care import CareScenario
-from scenarios.runner import TaskQueueRunner, _QueueTask
+from scenarios.runner import Runner, TaskQueueRunner, _QueueTask
 from src import progress, progress_store
 from src.coins import read_coins_from_ocr
 from src.config import NotifyConfig, TaskItemConfig
@@ -38,6 +38,28 @@ from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
+    def test_failure_backoff_escalates_independently_and_success_resets(self):
+        runner = Runner.__new__(Runner)
+        self.assertEqual([runner._failure_delay('好友护理') for _ in range(6)],
+                         [120, 120, 600, 600, 3600, 3600])
+        self.assertEqual(runner._failure_delay('踩踩'), 120)
+        runner._run_round = Mock(return_value=True)
+        self.assertTrue(runner.run_one(object(), '好友护理', fatal=False))
+        self.assertEqual(runner._failure_delay('好友护理'), 120)
+
+    def test_employed_failure_always_retries_two_minutes_after_failure(self):
+        runner = TaskQueueRunner.__new__(TaskQueueRunner)
+        runner.retry_after = {}
+        runner._employed_last_check = datetime(2026, 10, 12, 21, 38)
+        for _ in range(6):
+            self.assertEqual(runner._failure_delay('被雇佣'), 120)
+        with patch('scenarios.runner.datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 12, 21, 40)
+            runner._reschedule('被雇佣')
+        self.assertEqual(runner.retry_after['被雇佣'],
+                         datetime(2026, 10, 12, 21, 42))
+        self.assertIsNone(runner._employed_last_check)
+
     def test_available_reminder_once_per_window_and_cross_midnight(self):
         scen = EmployedScenario.__new__(EmployedScenario)
         scen.cfg = SimpleNamespace(employed=SimpleNamespace(

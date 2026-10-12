@@ -305,7 +305,6 @@ SETTING_FIELDS = [
     ('emulator.path', '模拟器安装路径（留空自动探测）', 'str'),
     ('emulator.device_spoof', 'MuMu 机型伪装（需 Root，默认关闭）', 'bool'),
     ('runner.engine', '调度引擎', ['task_queue', 'legacy']),
-    ('tasks.failure_interval', '任务失败重试间隔（秒）', 'int'),
     ('schedule.coin_threshold', '金币阈值', 'int'),
     ('schedule.check_interval', '状态检查间隔（秒）', 'int'),
     ('schedule.main_page_checks', '主页面检测次数', 'int'),
