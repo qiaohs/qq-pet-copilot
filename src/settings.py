@@ -86,6 +86,7 @@ DEFAULTS = {
     'employed.off_hours_recall': True,
     'employed.off_hours_interval_seconds': 480,
     'employed.unemployed_reminder': True,
+    'employed.available_reminder': True,
     'employed.unemployed_reminder_minutes': 30,
     'employed.action': '等到25/75（小于45min）',
     'recover.emulator_restart_cmd': '',
@@ -146,6 +147,7 @@ def validate_field(key: str, value):
     if key in ('friend_care.enabled', 'friend_care.post_one_click_care',
                'hire_friend.enabled', 'employed.enabled',
                'employed.off_hours_recall', 'employed.unemployed_reminder',
+               'employed.available_reminder',
                'friend_navigation.stop_at_non_friend', 'lucky_bag.self_enabled',
                'lucky_bag.friend_enabled'):
         return (True, value) if isinstance(value, bool) else (False, default)

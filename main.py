@@ -380,6 +380,7 @@ TASK_SETTING_FIELDS = [
     ('employed.off_hours_recall', '非被雇佣时段按50/50召回并通知', 'bool'),
     ('employed.off_hours_interval_seconds', '非被雇佣时段检查间隔（秒）', 'int'),
     ('employed.unemployed_reminder', '时段内连续未被雇佣提醒', 'bool'),
+    ('employed.available_reminder', '进入被雇佣时段空闲时提醒', 'bool'),
     ('employed.unemployed_reminder_minutes', '未被雇佣提醒等待（分钟）', 'int'),
 ]
 

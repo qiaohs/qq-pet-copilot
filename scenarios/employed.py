@@ -15,8 +15,9 @@ employed.off_hours_recall 后，非时间段也会巡检，按 50/50 召回并�
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 
-from src.notify import send_unemployed_reminder
+from src.notify import send_employment_time, send_unemployed_reminder
 from src.progress import log
 from src.scenario import BUSY_GATE_ATTEMPTS, DeviceScenario
 
@@ -28,6 +29,30 @@ class EmployedScenario(DeviceScenario):
         super().__init__(dev)
         self._unemployed_since: float | None = None
         self._unemployed_reminded = False
+        self._employment_time_notified: str | None = None
+
+    def _notify_available_once(self, now: datetime | None = None) -> None:
+        """每个被雇佣时间窗首次确认空闲时提醒，跨零点归属开始日期。"""
+        ec = self.cfg.employed
+        if not ec.enabled or not getattr(ec, 'available_reminder', True):
+            return
+        now = now or datetime.now()
+        start_s, end_s = ec.time_range.split('-', 1)
+        start = datetime.strptime(start_s.strip(), '%H:%M').time()
+        end = datetime.strptime(end_s.strip(), '%H:%M').time()
+        current = now.time()
+        in_window = (start <= current < end if end > start
+                     else current >= start or current < end)
+        if not in_window:
+            return
+        day = now.date()
+        if end <= start and current < end:
+            day -= timedelta(days=1)
+        window = f'{day.isoformat()}:{ec.time_range}'
+        if self._employment_time_notified == window:
+            return
+        send_employment_time(window)
+        self._employment_time_notified = window
 
     def _reset_unemployed_reminder(self) -> None:
         self._unemployed_since = None
@@ -65,6 +90,7 @@ class EmployedScenario(DeviceScenario):
         log(f'被雇佣检查: 出门查看是否被雇佣中（处理方式: {action}）')
         self.ensure_main_page()
         self.leave_home()
+        busy = False
         # 出门后活动面板有几秒加载延迟，多检测几轮再下结论
         for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
             screen = self.screen()
@@ -81,10 +107,23 @@ class EmployedScenario(DeviceScenario):
                     log('仍在被雇佣中，未到召回时机，回主页面（间隔后再检查）')
                 self.ensure_main_page()
                 return True
+            if any(self.see(sign, screen) for sign in
+                   ('school_in', 'work_in', 'adventure_in')):
+                busy = True
+                break
             if attempt < BUSY_GATE_ATTEMPTS:
                 time.sleep(0.5)
         log('未被雇佣')
         self.clear_off_hours_employed_notice()
+        if busy:
+            log('宠物仍在学习、工作或冒险，暂不发送可被雇佣提醒')
+            self._reset_unemployed_reminder()
+            self.ensure_main_page()
+            return True
+        # 同时确认出门地图，避免把未加载完成或异常弹窗当成空闲。
+        source = self.dev.hierarchy()
+        if self.see('school', screen, source=source):
+            self._notify_available_once()
         self._record_unemployed(off_hours=self.is_employed_off_hours())
         self.ensure_main_page()
         return True

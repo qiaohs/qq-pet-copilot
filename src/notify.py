@@ -95,6 +95,15 @@ def send_unemployed_reminder(minutes: int) -> bool:
     )
 
 
+def send_employment_time(window: str) -> bool:
+    """按时间窗持久化去重，程序重启也不会重复提醒。"""
+    return _send_notification(
+        _load_notify_config(), '[QQ宠物助手] 到雇佣时间了',
+        '已进入被雇佣时段，宠物当前空闲，可以安排雇佣了。',
+        event_key=f'employment_time:{window}', cooldown_seconds=7 * 86400,
+    )
+
+
 def send_test_notification(reason: str) -> bool:
     """测试通知渠道：不受事件开关和去重限制。"""
     return _send_notification(_load_notify_config(), TEST_TITLE, reason)

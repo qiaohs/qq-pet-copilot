@@ -276,6 +276,8 @@ employed:
   off_hours_interval_seconds: 480
   # 被雇佣时段内连续未发现被雇佣时提醒一次；发现被雇佣后，下一段空闲重新计时
   unemployed_reminder: true
+  # 每个被雇佣时间段首次确认空闲时推送“到雇佣时间了”
+  available_reminder: true
   unemployed_reminder_minutes: 30
   # 被雇佣后处理：等到25/75（分成到 雇佣者<=25% 被雇佣者>=75% 才召回，收益最高）/
   # 等到25/75（小于45min）（面板剩余时间 >45 分钟立即召回，<=45 分钟继续等到25/75）/

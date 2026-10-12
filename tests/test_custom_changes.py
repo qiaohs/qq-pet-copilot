@@ -38,6 +38,20 @@ from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
+    def test_available_reminder_once_per_window_and_cross_midnight(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(
+            enabled=True, available_reminder=True, time_range='20:00-02:00'))
+        scen._employment_time_notified = None
+        with patch('scenarios.employed.send_employment_time') as sent:
+            scen._notify_available_once(datetime(2026, 10, 12, 19, 59))
+            sent.assert_not_called()
+            scen._notify_available_once(datetime(2026, 10, 12, 20, 1))
+            scen._notify_available_once(datetime(2026, 10, 13, 1, 0))
+            sent.assert_called_once_with('2026-10-12:20:00-02:00')
+            scen._notify_available_once(datetime(2026, 10, 13, 20, 1))
+            self.assertEqual(sent.call_count, 2)
+
     def test_selected_friend_uses_yellow_card_highlight(self):
         screen = np.zeros((1440, 720, 3), dtype=np.uint8)
         # 中间好友卡片的黄色选中框；坐标对应真机底部轮播。
