@@ -269,7 +269,7 @@ class TasksConfig:
     # 没列出的主任务按默认顺序兜底排最后
     main_order: str = "school>adventure>hire_friend>work"
     # 旧配置兼容字段；运行时失败退避已改为连续失败 2/10/60 分钟，
-    # 被雇佣检查固定 2 分钟，不再使用此值排期。
+    # 被雇佣检查同样逐级退避，不再使用此值排期。
     failure_interval: int = 1800
     care: TaskItemConfig = field(default_factory=TaskItemConfig)
     friend_care: TaskItemConfig = field(default_factory=TaskItemConfig)

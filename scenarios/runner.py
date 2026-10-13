@@ -123,9 +123,6 @@ RECOVERY_RESET_AFTER = 3600
 # 支线任务（冒险/踩踩/PK/好友护理/好友雇佣）多次重试仍失败后的延后重试间隔（秒）：
 # 参考 qq-farm-copilot 的 failure_interval 队列机制——失败任务重新排期，
 # 调度器先执行其他任务，到点后 due() 自动放行重试
-EMPLOYED_RETRY_SECONDS = 120
-
-
 def failure_retry_seconds(failures: int) -> int:
     """按完整失败轮次退避：前两轮 2 分钟，第 3-4 轮 10 分钟，之后 1 小时。"""
     return 120 if failures <= 2 else 600 if failures <= 4 else 3600
@@ -445,12 +442,14 @@ class Runner:
         raise ScenarioFailed(last)
 
     def _reset_failure_streak(self, name: str) -> None:
+        name = '被雇佣' if name == '被雇佣检查' else name
         if hasattr(self, '_failure_streaks'):
             self._failure_streaks.pop(name, None)
+        if name == '被雇佣':
+            self.retry_after.pop(name, None)
 
     def _failure_delay(self, name: str) -> int:
-        if name in ('被雇佣', '被雇佣检查'):
-            return EMPLOYED_RETRY_SECONDS
+        name = '被雇佣' if name == '被雇佣检查' else name
         if not hasattr(self, '_failure_streaks'):
             self._failure_streaks = {}
         count = self._failure_streaks.get(name, 0) + 1
@@ -458,7 +457,7 @@ class Runner:
         return failure_retry_seconds(count)
 
     def _reschedule(self, name: str) -> None:
-        """被雇佣失败固定 2 分钟重试，其他支线按连续失败轮次逐级退避。"""
+        """按连续失败轮次逐级退避，被雇佣检查与召回也持续重试。"""
         delay = self._failure_delay(name)
         at = datetime.now() + timedelta(seconds=delay)
         self.retry_after[name] = at
@@ -1630,6 +1629,12 @@ class TaskQueueRunner(Runner):
             return True
         if self._main_finished(tasks):
             future = []
+            ec = self.school.cfg.employed
+            if ec.enabled:
+                # 被雇佣巡检不在 tasks.order 中；不能因主任务结束而退出常驻调度。
+                # 短轮询保留失败退避、跨时段检查及配置热加载。
+                time.sleep(QUEUE_POLL_INTERVAL)
+                return True
             for key in order:
                 if key not in SIDE_TASK_KEYS:
                     continue

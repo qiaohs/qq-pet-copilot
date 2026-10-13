@@ -30,6 +30,7 @@ class EmployedScenario(DeviceScenario):
         self._unemployed_since: float | None = None
         self._unemployed_reminded = False
         self._employment_time_notified: str | None = None
+        self._recall_pending = False
 
     def _notify_available_once(self, now: datetime | None = None) -> None:
         """每个被雇佣时间窗首次确认空闲时提醒，跨零点归属开始日期。"""
@@ -99,10 +100,14 @@ class EmployedScenario(DeviceScenario):
                 off_hours = self.is_employed_off_hours()
                 if off_hours:
                     self.notify_off_hours_employed_once()
-                if self.employed_recall_ready(
+                if getattr(self, '_recall_pending', False) or self.employed_recall_ready(
                         screen,
                         off_hours=off_hours or self.off_hours_employed_mode_active()):
+                    if getattr(self, '_recall_pending', False):
+                        log('上次召回尚未完成，继续重试召回')
+                    self._recall_pending = True
                     self._recall_employed()
+                    self._recall_pending = False
                 else:
                     log('仍在被雇佣中，未到召回时机，回主页面（间隔后再检查）')
                 self.ensure_main_page()
@@ -113,17 +118,21 @@ class EmployedScenario(DeviceScenario):
                 break
             if attempt < BUSY_GATE_ATTEMPTS:
                 time.sleep(0.5)
-        log('未被雇佣')
-        self.clear_off_hours_employed_notice()
         if busy:
+            self._recall_pending = False
+            self.clear_off_hours_employed_notice()
             log('宠物仍在学习、工作或冒险，暂不发送可被雇佣提醒')
             self._reset_unemployed_reminder()
             self.ensure_main_page()
             return True
         # 同时确认出门地图，避免把未加载完成或异常弹窗当成空闲。
         source = self.dev.hierarchy()
-        if self.see('school', screen, source=source):
-            self._notify_available_once()
+        if not self.see('school', screen, source=source):
+            raise RuntimeError('未能确认被雇佣状态或空闲地图，保留召回状态等待重试')
+        log('已确认空闲地图，未被雇佣')
+        self._recall_pending = False
+        self.clear_off_hours_employed_notice()
+        self._notify_available_once()
         self._record_unemployed(off_hours=self.is_employed_off_hours())
         self.ensure_main_page()
         return True

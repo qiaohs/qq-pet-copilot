@@ -47,18 +47,64 @@ class CustomChangesTest(TestCase):
         self.assertTrue(runner.run_one(object(), '好友护理', fatal=False))
         self.assertEqual(runner._failure_delay('好友护理'), 120)
 
-    def test_employed_failure_always_retries_two_minutes_after_failure(self):
+    def test_employed_failure_retries_then_escalates_and_success_resets(self):
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
         runner.retry_after = {}
         runner._employed_last_check = datetime(2026, 10, 12, 21, 38)
-        for _ in range(6):
-            self.assertEqual(runner._failure_delay('被雇佣'), 120)
+        self.assertEqual([runner._failure_delay('被雇佣检查') for _ in range(6)],
+                         [120, 120, 600, 600, 3600, 3600])
+        runner._reset_failure_streak('被雇佣检查')
         with patch('scenarios.runner.datetime') as clock:
             clock.now.return_value = datetime(2026, 10, 12, 21, 40)
             runner._reschedule('被雇佣')
         self.assertEqual(runner.retry_after['被雇佣'],
                          datetime(2026, 10, 12, 21, 42))
         self.assertIsNone(runner._employed_last_check)
+
+    def test_pending_recall_retries_without_rechecking_ratio(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(action='等到25/75'))
+        scen._recall_pending = True
+        scen.is_employed_off_hours = Mock(return_value=False)
+        scen.off_hours_employed_mode_active = Mock(return_value=False)
+        scen.ensure_main_page = Mock()
+        scen.leave_home = Mock()
+        scen.screen = Mock(return_value=object())
+        scen.see = Mock(return_value=(10, 10, 1.0))
+        scen.employed_recall_ready = Mock(return_value=False)
+        scen._recall_employed = Mock(side_effect=RuntimeError('召回失败'))
+        with self.assertRaisesRegex(RuntimeError, '召回失败'):
+            scen.run()
+        self.assertTrue(scen._recall_pending)
+        scen.employed_recall_ready.assert_not_called()
+        scen._recall_employed.side_effect = None
+        self.assertTrue(scen.run())
+        self.assertFalse(scen._recall_pending)
+
+    def test_unknown_employed_page_preserves_pending_recall_and_fails(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(action='等到25/75'))
+        scen._recall_pending = True
+        scen.is_employed_off_hours = Mock(return_value=False)
+        scen.off_hours_employed_mode_active = Mock(return_value=False)
+        scen.ensure_main_page = Mock()
+        scen.leave_home = Mock()
+        scen.screen = Mock(return_value=object())
+        scen.see = Mock(return_value=None)
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='unknown'))
+        with patch('scenarios.employed.time.sleep'), self.assertRaisesRegex(
+                RuntimeError, '未能确认'):
+            scen.run()
+        self.assertTrue(scen._recall_pending)
+
+    def test_employed_checks_keep_scheduler_alive_after_main_tasks_finish(self):
+        runner = TaskQueueRunner.__new__(TaskQueueRunner)
+        runner._rest_until = None
+        runner._main_finished = Mock(return_value=True)
+        runner.school = SimpleNamespace(cfg=SimpleNamespace(
+            employed=SimpleNamespace(enabled=True)))
+        with patch('scenarios.runner.time.sleep'):
+            self.assertTrue(runner._sleep_until_next({}, []))
 
     def test_available_reminder_once_per_window_and_cross_midnight(self):
         scen = EmployedScenario.__new__(EmployedScenario)
