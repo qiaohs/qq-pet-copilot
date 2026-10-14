@@ -1,17 +1,22 @@
 """好友页公共识别：好友边界与福袋状态。
 
-福袋是 canvas 图片，控件树和 OCR 都没有稳定文字。样本中自己/好友使用同一套
-素材和位置：未领取为金棕袋体并带黄色动态光晕，领取后为白色袋体且无光。
-因此只在左下固定比例区域做 HSV 连通域判断，不受宠物和大部分背景变化影响。
+福袋是 canvas 图片，没有稳定文字。用袋口和爪印两处灰度纹理联合匹配，
+要求相对位置一致；系绳袋口为未领取，敞口袋沿为已领取。
+背景颜色和动态金色光晕均不参与判断，低置信度时跳过领取。
 """
 from __future__ import annotations
 
 import time
+import base64
+import json
+import zlib
+from functools import lru_cache
 
 import cv2
 import numpy as np
 
 from src.ocr import ocr_texts
+from src.config import resource_path
 from src.progress import log
 from src.scenario import CLICK_INTERVAL
 
@@ -20,61 +25,68 @@ LUCKY_BAG_CLAIMED = '已领取'
 LUCKY_BAG_ABSENT = '无福袋'
 LUCKY_BAG_UNKNOWN = '识别失败'
 
-# 阈值基于用户提供的 720x1440 多背景样本，运行时按像素面积等比缩放。
-_REFERENCE_AREA = 720 * 1440
-_GLOW_COMPONENT_AREA = 600
-_GLOW_COMPONENT_HEIGHT = 70
-_BAG_ORANGE_MIN_AREA = 400
-_BAG_ORANGE_MAX_AREA = 4000
+_BAG_MATCH_MIN = 0.78
+_BAG_MATCH_MARGIN = 0.08
 
 
-def _has_bag_glow(mask: np.ndarray, area_scale: float, height_scale: float) -> bool:
-    """金色区域既要够大，也要有福袋光晕的纵向跨度。
+@lru_cache(maxsize=1)
+def _bag_templates() -> tuple:
+    """只保存袋口/爪印小特征，不携带完整截图、账号或背景。"""
+    path = resource_path('assets/lucky_bag_features.json')
+    raw = json.loads(path.read_text(encoding='utf-8'))
+    return tuple((entry['state'], entry['offset'], tuple(
+        np.frombuffer(zlib.decompress(base64.b64decode(part['data'])),
+                      dtype=np.uint8).reshape(part['shape'])
+        for part in entry['parts'])) for entry in raw['templates'])
 
-    只看面积会把暖色地板、发光宠物窝识别成福袋；这些背景通常是横向扁块，
-    而用户样本里的福袋动画至少形成约 70px 高的纵向连通区域。
-    """
-    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-    for index in range(1, count):
-        area = stats[index, cv2.CC_STAT_AREA]
-        height = stats[index, cv2.CC_STAT_HEIGHT]
-        if (area >= _GLOW_COMPONENT_AREA * area_scale
-                and height >= _GLOW_COMPONENT_HEIGHT * height_scale):
-            return True
-    return False
+
+def _bag_match_scores(screen: np.ndarray) -> dict[str, float]:
+    """袋口和爪印都要匹配，且相对位置相符；较弱一处决定最终置信度。"""
+    height, width = screen.shape[:2]
+    # 只处理左下小区域，统一到 720x1440 的半尺寸坐标，兼容截图分辨率变化。
+    roi = screen[round(height * 850 / 1440):round(height * 1045 / 1440),
+                 round(width * 25 / 720):round(width * 200 / 720), :3]
+    gray = cv2.cvtColor(cv2.resize(roi, (88, 98), interpolation=cv2.INTER_AREA),
+                        cv2.COLOR_RGB2GRAY)
+    scores = {'unopened': 0.0, 'claimed': 0.0}
+    for state, offset, (mouth, paw) in _bag_templates():
+        for scale in (0.9, 1.0, 1.1):
+            neck = cv2.resize(mouth, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_LINEAR)
+            foot = cv2.resize(paw, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_LINEAR)
+            matches = cv2.matchTemplate(gray, neck, cv2.TM_CCOEFF_NORMED)
+            _, neck_score, _, (x, y) = cv2.minMaxLoc(matches)
+            if neck_score < 0.6:
+                continue
+            # 只在袋口下方的预期位置找爪印，避免分别匹配到两个背景装饰。
+            px, py = x + round(offset[0] * scale), y + round(offset[1] * scale)
+            h, w = foot.shape
+            x1, y1 = max(0, px - 3), max(0, py - 3)
+            patch = gray[y1:min(gray.shape[0], py + h + 3),
+                         x1:min(gray.shape[1], px + w + 3)]
+            if patch.shape[0] < h or patch.shape[1] < w:
+                continue
+            _, paw_score, _, _ = cv2.minMaxLoc(
+                cv2.matchTemplate(patch, foot, cv2.TM_CCOEFF_NORMED))
+            scores[state] = max(scores[state], min(neck_score, paw_score))
+    return scores
 
 
 def lucky_bag_state(screen: np.ndarray) -> str:
     """区分当前页面左下福袋的未领取/已领取/不存在状态。"""
     if screen is None or screen.ndim != 3 or screen.shape[0] < 100 or screen.shape[1] < 100:
         return LUCKY_BAG_UNKNOWN
-    height, width = screen.shape[:2]
-    hsv = cv2.cvtColor(screen, cv2.COLOR_RGB2HSV)
-    area_scale = width * height / _REFERENCE_AREA
-    height_scale = height / 1440
-
-    # 未领取福袋的动态金色光晕；取宽松区域，动画各帧的光点位置变化也能命中。
-    x1, x2 = int(width * 0.02), int(width * 0.29)
-    y1, y2 = int(height * 0.57), int(height * 0.73)
-    glow_roi = hsv[y1:y2, x1:x2]
-    glow = cv2.inRange(glow_roi, (15, 70, 170), (40, 255, 255))
-    if _has_bag_glow(glow, area_scale, height_scale):
-        return LUCKY_BAG_UNOPENED
-
-    # 无光时再找袋口/系绳处稳定的橙色连通块，用于区分白色已领取袋与无福袋。
-    x1, x2 = int(width * 0.04), int(width * 0.27)
-    y1, y2 = int(height * 0.59), int(height * 0.72)
-    orange_roi = hsv[y1:y2, x1:x2]
-    orange = cv2.inRange(orange_roi, (3, 100, 90), (20, 255, 255))
-    count, _, stats, centroids = cv2.connectedComponentsWithStats(orange, 8)
-    for index in range(1, count):
-        component_area = stats[index, cv2.CC_STAT_AREA] / area_scale
-        cx = (centroids[index, 0] + x1) / width
-        cy = (centroids[index, 1] + y1) / height
-        if (_BAG_ORANGE_MIN_AREA <= component_area <= _BAG_ORANGE_MAX_AREA
-                and 0.11 <= cx <= 0.18 and 0.61 <= cy <= 0.65):
-            return LUCKY_BAG_CLAIMED
-    return LUCKY_BAG_ABSENT
+    try:
+        scores = _bag_match_scores(screen)
+    except (OSError, ValueError, KeyError, zlib.error, cv2.error) as exc:
+        log(f'福袋特征加载/匹配失败，跳过领取: {exc}')
+        return LUCKY_BAG_UNKNOWN
+    best = max(scores, key=scores.get)
+    other = 'claimed' if best == 'unopened' else 'unopened'
+    if scores[best] >= _BAG_MATCH_MIN and scores[best] - scores[other] >= _BAG_MATCH_MARGIN:
+        return LUCKY_BAG_UNOPENED if best == 'unopened' else LUCKY_BAG_CLAIMED
+    return LUCKY_BAG_UNKNOWN if scores[best] >= 0.6 else LUCKY_BAG_ABSENT
 
 
 def is_non_friend_page(screen: np.ndarray) -> bool:
@@ -124,7 +136,10 @@ def claim_lucky_bag(scenario, owner: str, screen: np.ndarray | None = None) -> s
             current = scenario.screen()
             state = lucky_bag_state(current)
             if state != LUCKY_BAG_UNOPENED:
-                log(f'{owner}福袋领取完成，当前状态: {state}')
+                if state == LUCKY_BAG_UNKNOWN:
+                    log(f'{owner}福袋点击后画面不确定，停止点击，留待下轮确认')
+                else:
+                    log(f'{owner}福袋领取完成，当前状态: {state}')
                 return state
             log(f'{owner}福袋点击后仍显示未领取，重试 ({attempt}/2)')
         log(f'{owner}福袋两次点击后仍未领取，留待下轮护理重试')

@@ -509,14 +509,14 @@ class CustomChangesTest(TestCase):
         dev._run = lambda *_args: SimpleNamespace(stdout=png)
         self.assertEqual(dev.screenshot_png(), png)
 
-    def test_lucky_bag_recognizes_glow_and_claimed_bag(self):
+    def test_lucky_bag_does_not_treat_color_blobs_as_bags(self):
         import cv2
         import numpy as np
 
         unopened_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
         unopened_hsv[900:980, 80:110] = (25, 180, 230)
         unopened = cv2.cvtColor(unopened_hsv, cv2.COLOR_HSV2RGB)
-        self.assertEqual(lucky_bag_state(unopened), LUCKY_BAG_UNOPENED)
+        self.assertEqual(lucky_bag_state(unopened), LUCKY_BAG_ABSENT)
 
         # 回归：暖色地板/发光宠物窝可能面积很大，但形状是横向扁块，不是福袋光晕。
         floor_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
@@ -527,7 +527,57 @@ class CustomChangesTest(TestCase):
         claimed_hsv = np.zeros((1440, 720, 3), dtype=np.uint8)
         claimed_hsv[895:920, 90:120] = (10, 180, 180)
         claimed = cv2.cvtColor(claimed_hsv, cv2.COLOR_HSV2RGB)
-        self.assertEqual(lucky_bag_state(claimed), LUCKY_BAG_CLAIMED)
+        self.assertEqual(lucky_bag_state(claimed), LUCKY_BAG_ABSENT)
+
+    def test_lucky_bag_real_backgrounds_and_resolutions(self):
+        """用本地标注截图回归；不把含好友、设备信息的完整截图提交进仓库。"""
+        import cv2
+        from PIL import Image
+        root = Path(__file__).resolve().parent.parent / 'runs' / 'screenshots'
+        cases = []
+        for p in root.rglob('*.png'):
+            if '弹窗' in str(p):
+                continue
+            if p.name in ('无福袋一直被识别为未领取.png',
+                          '我记得已领取会被识别为未领取.png',
+                          'screenshot_20260928_103653.png',
+                          'screenshot_20260928_194949.png'):
+                expected = LUCKY_BAG_ABSENT
+            elif p.name == '好像无法识别为未领取.png' or '未领取' in p.parent.name:
+                expected = LUCKY_BAG_UNOPENED
+            elif '已领取' in p.parent.name:
+                expected = LUCKY_BAG_CLAIMED
+            elif '无福袋' in p.parent.name:
+                expected = LUCKY_BAG_ABSENT
+            elif '非好友' in p.parent.name and '有福袋' in p.parent.name:
+                expected = LUCKY_BAG_UNOPENED
+            else:
+                continue
+            cases.append((p, expected))
+        if not cases:
+            self.skipTest('本地截图未附带在仓库内')
+        for p, expected in cases:
+            screen = np.asarray(Image.open(p).convert('RGB'))
+            for size in ((360, 720), (720, 1440), (1080, 2160)):
+                with self.subTest(image=p.name, size=size):
+                    self.assertEqual(lucky_bag_state(cv2.resize(screen, size)), expected)
+
+    def test_queue_detail_lists_match_displayed_counts_including_pending(self):
+        runner = TaskQueueRunner.__new__(TaskQueueRunner)
+        runner._current_task = None
+        ready = _QueueTask('care')
+        waiting = _QueueTask('adventure')
+        runner._eligible = lambda task, now: task is ready
+        runner._main_pending_scen = lambda: SimpleNamespace(pending={
+            'desc': '学习', 'until': datetime(2099, 1, 1)})
+        with patch('scenarios.runner.save_queue_status') as save:
+            runner._write_queue_status(
+                {'care': ready, 'adventure': waiting}, ['care', 'adventure'])
+        state = save.call_args.args[0]
+        self.assertEqual(state['waiting_tasks'], ['护理'])
+        self.assertEqual(state['ready_tasks'], ['冒险', '学习（等待收尾）'])
+        self.assertEqual(state['waiting'], len(state['waiting_tasks']))
+        self.assertEqual(state['ready'], len(state['ready_tasks']))
 
     def test_lucky_bag_closes_possible_popup_by_shadow_click(self):
         import numpy as np

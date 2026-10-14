@@ -5,6 +5,7 @@ runs/queue_status.json:
  "next": "下一任务名", "next_at": "HH:MM:SS", "next_ts": 下一任务时间戳（算剩余秒数用）,
  "ready": 待执行数量（在等退避/每日窗口/pending 收尾时间）,
  "waiting": 等待中数量（现在就可执行、等调度器轮到）, "updated": "HH:MM:SS",
+ "ready_tasks": 待执行任务名列表（含等待收尾的活动）, "waiting_tasks": 等待中任务名列表,
  "tasks": {"<任务键>": {"state": "disabled/dead/ready/waiting",
            "next": "YYYY-MM-DD HH:MM:SS 下次执行时间（可能为空）"}}}
 

@@ -12,6 +12,7 @@ EXE_NAME = 'QQPetCopilotEmulator' if EMULATOR else 'QQPetCopilot'
 
 APP_ICON = 'qq轻聊.ico' if Path('qq轻聊.ico').is_file() else None
 datas = [('config.example.yaml', '.')]
+datas.append(('assets/lucky_bag_features.json', 'assets'))
 if APP_ICON:
     datas.append((APP_ICON, '.'))
 # resources/scrcpy-win64/ 不入库（tools/fetch_scrcpy.py 拉取），存在才随包带上

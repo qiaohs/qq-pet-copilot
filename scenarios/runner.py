@@ -1550,6 +1550,7 @@ class TaskQueueRunner(Runner):
         next_at = None
         next_name = ''
         task_states = {}
+        ready_tasks, waiting_tasks = [], []
         for key in order:
             task = tasks[key]
             cfg = task.cfg
@@ -1566,10 +1567,12 @@ class TaskQueueRunner(Runner):
             if self._eligible(task, now):
                 # 现在就能跑、在等调度器轮到 -> 等待中
                 waiting += 1
+                waiting_tasks.append(task.name)
                 task_states[key] = {'state': 'ready', 'next': ''}
                 continue
             # 在等退避/每日时间点 -> 待执行
             ready += 1
+            ready_tasks.append(task.name)
             # 最近的等待点：退避时间 / 下一个每日时间点
             cand = task.next_at if task.next_at > now else None
             if key in REST_TASK_KEYS:
@@ -1595,6 +1598,7 @@ class TaskQueueRunner(Runner):
             # pending 在等收尾时间，也算待执行
             ready += 1
             pending_desc = pend.pending['desc']
+            ready_tasks.append(f'{pending_desc}（等待收尾）')
             until = pend.pending['until']
             if next_at is None or until < next_at:
                 next_at, next_name = until, f'{pending_desc}收尾'
@@ -1607,6 +1611,8 @@ class TaskQueueRunner(Runner):
             'next_ts': next_at.timestamp() if next_at else 0,
             'ready': ready,
             'waiting': waiting,
+            'ready_tasks': ready_tasks,
+            'waiting_tasks': waiting_tasks,
             'tasks': task_states,
             'updated': now.strftime('%H:%M:%S'),
         })

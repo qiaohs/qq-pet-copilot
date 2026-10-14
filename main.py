@@ -1302,6 +1302,7 @@ class MainWindow(MSFluentWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         self._queue_values = {}
+        self._queue_cells = {}
         for key, label in (('current', '当前任务'), ('next', '下一任务'),
                            ('ready', '待执行'), ('waiting', '等待中')):
             cell = QWidget()
@@ -1312,6 +1313,7 @@ class MainWindow(MSFluentWindow):
             value = StrongBodyLabel('-')
             cell_layout.addWidget(value)
             self._queue_values[key] = value
+            self._queue_cells[key] = cell
             row.addWidget(cell, 1)  # 四格等宽均分
         card.viewLayout.addWidget(body)
         return card
@@ -1476,6 +1478,7 @@ class MainWindow(MSFluentWindow):
         不开调度器也能看到队列里接下来要跑什么。
         """
         running = self._runner_proc is not None and self._runner_proc.poll() is None
+        details = {'ready': [], 'waiting': []}
         if running:
             st = load_queue_status()
             if st:
@@ -1494,19 +1497,35 @@ class MainWindow(MSFluentWindow):
                         else:
                             nxt += f'（{_format_remaining(-delta)}前）'
                 ready, waiting = str(st.get('ready', 0)), str(st.get('waiting', 0))
+                for key, state in (('ready', 'waiting'), ('waiting', 'ready')):
+                    # 兼容仍在运行的旧调度器：它尚未写任务名列表时由 tasks 推导。
+                    details[key] = st.get(f'{key}_tasks', [
+                        SCHEDULE_TASK_NAMES.get(name, name)
+                        for name, item in st.get('tasks', {}).items()
+                        if item.get('state') == state])
+                if 'ready_tasks' not in st and st.get('pending'):
+                    details['ready'].append(f"{st['pending']}（等待收尾）")
             else:
                 current, nxt = '无', '暂无（等待调度器写入）'
                 ready = waiting = '-'
         else:
             current = '无'
-            nxt, ready, waiting = self._predict_queue_summary()
+            nxt, ready, waiting = self._predict_queue_summary(details)
         for key, text in (('current', current), ('next', nxt),
                           ('ready', ready), ('waiting', waiting)):
             label = self._queue_values[key]
             label.setText(str(text))
-            label.setToolTip(str(text))
+            tooltip = str(text)
+            if key in details:
+                names = details[key]
+                tooltip = '\n'.join(names) if names else ('暂无任务' if str(text) == '0'
+                                                        else '暂无任务明细')
+            # 内容没变时不重设，避免每秒刷新打断正在显示的悬浮提示。
+            if label.toolTip() != tooltip:
+                label.setToolTip(tooltip)
+                self._queue_cells[key].setToolTip(tooltip)
 
-    def _predict_queue_summary(self) -> tuple:
+    def _predict_queue_summary(self, details: dict | None = None) -> tuple:
         """调度器未运行时按配置推算队列概要：下一任务 / 现在可执行数 / 等待中数。
 
         按 tasks.order 顺序扫描启用中的任务，第一个非"—"的推算结果就是下一任务
@@ -1529,8 +1548,12 @@ class MainWindow(MSFluentWindow):
                     continue
                 if pred in ('现在可执行', '启动后立即', '启动后判定'):
                     ready += 1
+                    if details is not None:
+                        details['ready'].append(f'{SCHEDULE_TASK_NAMES[key]}（{pred}）')
                 else:
                     waiting += 1
+                    if details is not None:
+                        details['waiting'].append(f'{SCHEDULE_TASK_NAMES[key]}（{pred}）')
                 if nxt == '无':
                     # "启动后立即"（护理）/"启动后判定"（学习/打工要等金币与时长判定）/
                     # "现在可执行"（支线任务当前在可执行窗口内）这类即时状态提示不展示，
