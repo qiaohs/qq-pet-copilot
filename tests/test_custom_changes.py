@@ -24,7 +24,7 @@ from main import ScrcpyContainer
 from src.scenario import DeviceScenario, StatBlocked, TaskDeferred
 from scenarios.work import WorkScenario
 from scenarios.care import CareScenario
-from scenarios.runner import Runner, TaskQueueRunner, _QueueTask
+from scenarios.runner import Runner, TaskQueueRunner, _QueueTask, ScenarioFailed
 from src import progress, progress_store
 from src.coins import read_coins_from_ocr
 from src.config import NotifyConfig, TaskItemConfig
@@ -38,6 +38,48 @@ from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
+    def test_recall_queues_six_retries_then_abandons_only_current_employment(self):
+        runner = Runner.__new__(Runner)
+        runner.employed = SimpleNamespace(_recall_pending=True, _recall_abandoned=False)
+        runner.retry_after = {}
+        with patch('scenarios.runner.datetime') as clock, \
+                patch('scenarios.runner.send_alert') as alert:
+            now = datetime(2026, 10, 14, 21, 0)
+            clock.now.return_value = now
+            for delay in (60, 60, 60, 120, 120, 120):
+                runner._reschedule('被雇佣')
+                self.assertEqual((runner.retry_after['被雇佣'] - now).total_seconds(), delay)
+                self.assertFalse(runner.employed._recall_abandoned)
+            runner._reschedule('被雇佣')
+            self.assertTrue(runner.employed._recall_abandoned)
+            self.assertFalse(runner.employed._recall_pending)
+            self.assertNotIn('被雇佣', runner.retry_after)
+            alert.assert_called_once()
+
+    def test_recall_failure_does_not_immediately_retry_or_reboot(self):
+        runner = Runner.__new__(Runner)
+        runner._run_round = Mock(side_effect=RuntimeError('召回失败'))
+        runner._capture_failure_image = Mock()
+        runner.recover = Mock()
+        with self.assertRaises(ScenarioFailed):
+            runner.run_one(object(), '被雇佣检查', fatal=False)
+        runner._run_round.assert_called_once()
+        runner.recover.assert_not_called()
+
+    def test_abandoned_recall_is_not_restarted_by_normal_polling(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.cfg = SimpleNamespace(employed=SimpleNamespace(action='等到25/75'))
+        scen._recall_abandoned = True
+        scen.is_employed_off_hours = Mock(return_value=False)
+        scen.off_hours_employed_mode_active = Mock(return_value=False)
+        scen.ensure_main_page = Mock()
+        scen.leave_home = Mock()
+        scen.screen = Mock(return_value=object())
+        scen.see = Mock(return_value=(10, 10, 1.0))
+        scen._recall_employed = Mock()
+        self.assertTrue(scen.run())
+        scen._recall_employed.assert_not_called()
+
     def test_failure_backoff_escalates_independently_and_success_resets(self):
         runner = Runner.__new__(Runner)
         self.assertEqual([runner._failure_delay('好友护理') for _ in range(6)],

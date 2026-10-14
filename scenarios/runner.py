@@ -405,6 +405,14 @@ class Runner:
             self._reset_failure_streak(name)
             return result
 
+        if name == '被雇佣检查':
+            try:
+                return run_and_reset()
+            except Exception as e:
+                log(f'被雇佣检查/召回本轮失败: {e}，先回主页面，再排队重试')
+                self._capture_failure_image('recall')
+                raise ScenarioFailed(str(e)) from e
+
         try:
             return run_and_reset()
         except StatBlocked:
@@ -447,18 +455,37 @@ class Runner:
             self._failure_streaks.pop(name, None)
         if name == '被雇佣':
             self.retry_after.pop(name, None)
+            if hasattr(self, '_failure_streaks'):
+                self._failure_streaks.pop('召回', None)
 
     def _failure_delay(self, name: str) -> int:
         name = '被雇佣' if name == '被雇佣检查' else name
+        recall = (name == '被雇佣' and getattr(
+            getattr(self, 'employed', None), '_recall_pending', False))
+        if recall:
+            name = '召回'  # 普通检查失败不占用有限的召回重试次数
         if not hasattr(self, '_failure_streaks'):
             self._failure_streaks = {}
         count = self._failure_streaks.get(name, 0) + 1
         self._failure_streaks[name] = count
+        if recall:
+            return 60 if count <= 3 else 120
         return failure_retry_seconds(count)
 
     def _reschedule(self, name: str) -> None:
         """按连续失败轮次逐级退避，被雇佣检查与召回也持续重试。"""
         delay = self._failure_delay(name)
+        if name == '被雇佣' and getattr(getattr(self, 'employed', None), '_recall_pending', False):
+            count = self._failure_streaks['召回']
+            if count > 6:
+                self.employed._recall_pending = False
+                self.employed._recall_abandoned = True
+                self.retry_after.pop(name, None)
+                self._employed_last_check = datetime.now()
+                log('本次召回在 6 轮排队重试后仍失败，放弃本次召回，等待自然结束')
+                send_alert('本次被雇佣召回在 6 轮排队重试后仍失败，已放弃，请手动查看。',
+                           event_key='employed_recall_abandoned')
+                return
         at = datetime.now() + timedelta(seconds=delay)
         self.retry_after[name] = at
         if name == '被雇佣':
@@ -744,12 +771,12 @@ class Runner:
                         self.run_one(self.employed, '被雇佣检查', fatal=False)
                     except ScenarioFailed as e:
                         self._notify_employed_failure(str(e))
-                        self._reschedule('被雇佣')
                         # 中断时页面可能停在出门页，先退回主页面再继续调度
                         try:
                             self.school.ensure_main_page()
                         except Exception as e:
                             log(f'被雇佣检查失败后回主页面失败: {e}')
+                        self._reschedule('被雇佣')
                         continue
                     self._employed_last_check = datetime.now()
                     continue
@@ -1417,9 +1444,9 @@ class TaskQueueRunner(Runner):
                 self.run_one(self.employed, '被雇佣检查', fatal=False)
             except ScenarioFailed as e:
                 self._notify_employed_failure(str(e))
-                self._reschedule('被雇佣')
                 # 中断时页面可能停在出门页，先退回主页面再调度其他任务
                 self._back_to_main('被雇佣检查失败后')
+                self._reschedule('被雇佣')
                 return
             self._employed_last_check = datetime.now()
         finally:

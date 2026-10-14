@@ -31,6 +31,7 @@ class EmployedScenario(DeviceScenario):
         self._unemployed_reminded = False
         self._employment_time_notified: str | None = None
         self._recall_pending = False
+        self._recall_abandoned = False
 
     def _notify_available_once(self, now: datetime | None = None) -> None:
         """每个被雇佣时间窗首次确认空闲时提醒，跨零点归属开始日期。"""
@@ -100,6 +101,10 @@ class EmployedScenario(DeviceScenario):
                 off_hours = self.is_employed_off_hours()
                 if off_hours:
                     self.notify_off_hours_employed_once()
+                if getattr(self, '_recall_abandoned', False):
+                    log('本次被雇佣召回已达到重试上限，等待自然结束，不再召回')
+                    self.ensure_main_page()
+                    return True
                 if getattr(self, '_recall_pending', False) or self.employed_recall_ready(
                         screen,
                         off_hours=off_hours or self.off_hours_employed_mode_active()):
@@ -120,6 +125,7 @@ class EmployedScenario(DeviceScenario):
                 time.sleep(0.5)
         if busy:
             self._recall_pending = False
+            self._recall_abandoned = False
             self.clear_off_hours_employed_notice()
             log('宠物仍在学习、工作或冒险，暂不发送可被雇佣提醒')
             self._reset_unemployed_reminder()
@@ -131,6 +137,7 @@ class EmployedScenario(DeviceScenario):
             raise RuntimeError('未能确认被雇佣状态或空闲地图，保留召回状态等待重试')
         log('已确认空闲地图，未被雇佣')
         self._recall_pending = False
+        self._recall_abandoned = False
         self.clear_off_hours_employed_notice()
         self._notify_available_once()
         self._record_unemployed(off_hours=self.is_employed_off_hours())
