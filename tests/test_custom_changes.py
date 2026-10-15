@@ -38,6 +38,55 @@ from src.locators import _locate
 
 
 class CustomChangesTest(TestCase):
+    def test_new_school_report_is_not_misclassified_as_adventure(self):
+        scen = DeviceScenario.__new__(DeviceScenario)
+        scen.see = Mock(return_value=(10, 10, 1.0))  # 分享是三种结算的公共按钮
+        for texts in (['宠物成绩单', '分享', '继续学习'], ['课程 巨星自我修养', '学分+45', '继续学习']):
+            with self.subTest(texts=texts), patch('src.scenario.ocr_screen',
+                    return_value=[(text, 0, 0, 1.0) for text in texts]):
+                self.assertEqual(scen._detect_settlement(object(), 'source'), 'school')
+
+    def test_employed_check_settles_activity_then_reenters_map(self):
+        scen = EmployedScenario.__new__(EmployedScenario)
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='report'))
+        scen._detect_settlement = Mock(side_effect=['school', None])
+        scen.see = Mock(return_value=(90, 100, 1.0))
+        scen.click = Mock()
+        scen.snapshot = Mock(return_value=('map_image', 'map_source'))
+        scen.settlement_completed = Mock()
+        scen.ensure_main_page = Mock()
+        scen.leave_home = Mock()
+        with patch('scenarios.employed.time.sleep'):
+            self.assertTrue(scen._settle_finished_activity('report_image'))
+        scen.settlement_completed.assert_called_once_with('school', 'report_image', 'report')
+        scen.click.assert_called_once_with(90, 100)
+        scen.leave_home.assert_called_once()
+        self.assertTrue(all(call.kwargs['count_hire'] is False
+                            for call in scen._detect_settlement.call_args_list))
+
+    def test_settlement_reuses_hire_pending_callback_without_double_counting(self):
+        runner = Runner.__new__(Runner)
+        counted = Mock()
+        runner.adventure = SimpleNamespace(pending=None)
+        runner.school = SimpleNamespace(pending=None)
+        runner.work = SimpleNamespace(pending=None)
+        runner.hire_friend = SimpleNamespace(pending={
+            'end_name': 'work_end', 'desc': '雇佣打工', 'on_finish': counted})
+        with patch('scenarios.runner.count_cross') as cross:
+            runner._complete_employed_settlement('work', 'image', 'source')
+        counted.assert_called_once()
+        cross.assert_not_called()
+        self.assertIsNone(runner.hire_friend.pending)
+
+    def test_settlement_without_pending_uses_cross_progress_once(self):
+        runner = Runner.__new__(Runner)
+        for key in ('adventure', 'school', 'work', 'hire_friend'):
+            setattr(runner, key, SimpleNamespace(pending=None))
+        runner.employed = SimpleNamespace(_detect_settlement=Mock(return_value='school'))
+        with patch('scenarios.runner.count_cross') as cross:
+            runner._complete_employed_settlement('school', 'image', 'source')
+        cross.assert_called_once_with('school')
+
     def test_recall_queues_six_retries_then_abandons_only_current_employment(self):
         runner = Runner.__new__(Runner)
         runner.employed = SimpleNamespace(_recall_pending=True, _recall_abandoned=False)
@@ -134,6 +183,7 @@ class CustomChangesTest(TestCase):
         scen.screen = Mock(return_value=object())
         scen.see = Mock(return_value=None)
         scen.dev = SimpleNamespace(hierarchy=Mock(return_value='unknown'))
+        scen._settle_finished_activity = Mock(return_value=False)
         with patch('scenarios.employed.time.sleep'), self.assertRaisesRegex(
                 RuntimeError, '未能确认'):
             scen.run()

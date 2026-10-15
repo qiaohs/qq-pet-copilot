@@ -789,21 +789,24 @@ class DeviceScenario:
         log(f'检测到正在{desc}，预计 {secs} 秒后结束（{until:%H:%M:%S} 收尾），先调度其他任务')
         return True
 
-    def _detect_settlement(self, screen, source) -> str | None:
+    def _detect_settlement(self, screen, source, *, count_hire: bool = True) -> str | None:
         """出门后的结算页检测（上次活动已结束未收尾，如调度器重启丢失 pending 后，
         点出门直接出现结算页）：OCR 文案区分——"教师评语"=学习、"打工总结"=打工
         （文案含配置的雇佣好友名称时再计一次雇佣好友）；都没有但有"分享"按钮
         （adventure_end）=冒险结算。命中返回 'school'/'work'/'adventure'，否则 None。"""
         results = ocr_screen(screen)
         texts = [t for t, *_ in results]
-        if any('教师评语' in t for t in texts):
+        if any('教师评语' in t or '宠物成绩单' in t for t in texts):
+            return 'school'
+        if any('继续学习' in t for t in texts) and any(
+                '课程' in t or '学分' in t for t in texts):
             return 'school'
         if any('打工总结' in t for t in texts):
             hf_names = (name.strip() for name in re.split(
                 r'[,，]', getattr(getattr(self.cfg, 'hire_friend', None), 'friend_name', '') or ''))
             matched = next((name for name in hf_names
                             if name and any(name in t for t in texts)), None)
-            if matched:
+            if matched and count_hire:
                 # 打工总结含任一候选好友名称：同时计一次雇佣好友
                 n = increment_progress(HIRE_FRIEND_PROGRESS_FILE)
                 log(f'打工总结含雇佣好友 {matched}，已计入雇佣好友次数（{n} 次）')

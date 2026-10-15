@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta
 
 from src.notify import send_employment_time, send_unemployed_reminder
-from src.progress import log
+from src.progress import count_cross, log
 from src.scenario import BUSY_GATE_ATTEMPTS, DeviceScenario
 
 
@@ -32,6 +32,40 @@ class EmployedScenario(DeviceScenario):
         self._employment_time_notified: str | None = None
         self._recall_pending = False
         self._recall_abandoned = False
+        self.settlement_completed = None  # 调度器注入：优先复用已登记活动的计数回调
+
+    def _settle_finished_activity(self, screen, *, already_settled: bool = False) -> bool:
+        """出门偶遇学习/工作/冒险结算时先收尾，再继续本轮雇佣检查。"""
+        source = self.dev.hierarchy()
+        kind = self._detect_settlement(screen, source, count_hire=False)
+        if not kind:
+            return False
+        if already_settled:
+            raise RuntimeError('结算返回后仍停在结算页，等待下一轮重试')
+        names = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
+        log(f'被雇佣检查遇到{names[kind]}结算页，先处理结算，再重新出门检查')
+        quit_hit = self.see('quit', screen, source)
+        if quit_hit:
+            self.click(quit_hit[0], quit_hit[1])
+        elif not self.go_back(source=source):
+            raise RuntimeError('活动结算页无法返回')
+        time.sleep(0.5)
+        # 必须确认离开才计数；不能误点“继续学习/继续冒险”启动新活动。
+        after, after_source = self.snapshot()
+        if self._detect_settlement(after, after_source, count_hire=False):
+            raise RuntimeError('活动结算页返回未生效')
+        callback = getattr(self, 'settlement_completed', None)
+        if callback:
+            callback(kind, screen, source)
+        else:
+            self._detect_settlement(screen, source)  # 单独运行时兼容雇佣好友交叉计数
+            count_cross(kind)
+        self._recall_pending = False
+        self._recall_abandoned = False
+        self.clear_off_hours_employed_notice()
+        self.ensure_main_page()
+        self.leave_home()
+        return True
 
     def _notify_available_once(self, now: datetime | None = None) -> None:
         """每个被雇佣时间窗首次确认空闲时提醒，跨零点归属开始日期。"""
@@ -93,8 +127,11 @@ class EmployedScenario(DeviceScenario):
         self.ensure_main_page()
         self.leave_home()
         busy = False
+        settled = False
         # 出门后活动面板有几秒加载延迟，多检测几轮再下结论
-        for attempt in range(1, BUSY_GATE_ATTEMPTS + 1):
+        attempt = 0
+        while attempt < BUSY_GATE_ATTEMPTS:
+            attempt += 1
             screen = self.screen()
             if self.see('employed_in', screen):
                 self._reset_unemployed_reminder()
@@ -121,6 +158,10 @@ class EmployedScenario(DeviceScenario):
                    ('school_in', 'work_in', 'adventure_in')):
                 busy = True
                 break
+            if self._settle_finished_activity(screen, already_settled=settled):
+                settled = True
+                attempt = 0  # 重新出门后给状态页面完整的加载检测机会
+                continue
             if attempt < BUSY_GATE_ATTEMPTS:
                 time.sleep(0.5)
         if busy:

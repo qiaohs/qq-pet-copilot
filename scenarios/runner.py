@@ -95,6 +95,7 @@ from src.progress import (
     SCHOOL_PROGRESS_FILE,
     VISIT_PROGRESS_FILE,
     WORK_PROGRESS_FILE,
+    count_cross,
     load_durations,
     load_progress,
     log,
@@ -187,6 +188,7 @@ class Runner:
         self.friend_care = FriendCareScenario(dev)
         self.hire_friend = FriendHireScenario(dev)
         self.employed = EmployedScenario(dev)
+        self.employed.settlement_completed = self._complete_employed_settlement
         self.recoveries = 0  # 连续异常恢复次数（成功跑完一轮清零；距上次超过 RECOVERY_RESET_AFTER 也清零）
         self.last_recovery_at = 0.0  # 上次发起恢复的 monotonic 时间
         self.retry_after: dict[str, datetime] = {}  # 支线任务名 -> 失败后的下次可执行时间
@@ -554,6 +556,20 @@ class Runner:
         except Exception as e:
             log(f'告警截图失败: {e}')
             return None
+
+    def _complete_employed_settlement(self, kind: str, screen, source) -> None:
+        """雇佣巡检顺手结算活动：已有 pending 则复用原回调，防重复统计。"""
+        end_name = f'{kind}_end'
+        for scen in (self.adventure, self.school, self.hire_friend, self.work):
+            pending = scen.pending
+            if pending is not None and pending['end_name'] == end_name:
+                scen.pending = None
+                pending['on_finish']()
+                log(f'{pending["desc"]}: 雇佣检查已完成收尾，清除原待收尾任务')
+                return
+        # 重启后未登记 pending：走已有的交叉计数，打工总结兼顾雇佣好友次数。
+        self.employed._detect_settlement(screen, source)
+        count_cross(kind)
 
     def _run_round(self, scen) -> bool:
         result = scen.run(max_rounds=1)
