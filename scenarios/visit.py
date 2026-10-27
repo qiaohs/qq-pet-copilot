@@ -242,6 +242,29 @@ class VisitScenario(DeviceScenario):
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('好友轮播无法回到第一项')
 
+    def begin_friend_walk(self) -> None:
+        """只打开一次好友页，回到列表起点后初始化遍历状态。"""
+        self._friends = []
+        self._friend_index = 0
+        self._current_friend_x = None
+        self.goto_first_friend()
+        self._rewind_friend_carousel()
+
+    def current_friend(self) -> tuple[str, list[tuple[str, int, int]]]:
+        """返回当前好友描述，并记录本次新加载的轮播项。"""
+        visible = self._wait_friend_items(required=True)
+        if not self._friends:
+            self._friends.extend(desc for desc, _, _ in visible if desc)
+            if visible:
+                self._current_friend_x = min(x for _, x, _ in visible)
+        else:
+            for desc, _, _ in visible:
+                if desc and desc not in self._friends:
+                    self._friends.append(desc)
+        if self._friend_index >= len(self._friends):
+            raise RuntimeError('无法确定当前好友')
+        return self._friends[self._friend_index], visible
+
     def next_friend(self, visible: list[tuple[str, int, int]] | None = None) -> bool:
         """切换到下一个好友：按累积名单顺序点下一个。
 

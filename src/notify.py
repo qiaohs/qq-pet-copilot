@@ -109,6 +109,15 @@ def send_test_notification(reason: str) -> bool:
     return _send_notification(_load_notify_config(), TEST_TITLE, reason)
 
 
+def send_school_milk_issue(reason: str, image_path: str | None = None) -> bool:
+    """可选学习道具失败提示，复用现有 Bark/OnePush/桌面渠道，每节最多一次。"""
+    message = f'{reason}。本节不再尝试喝奶，学习继续。'
+    if image_path:
+        message += f' 截图已保存：{image_path}'
+    return _send_notification(_load_notify_config(), '[QQ宠物助手] 高钙奶未确认使用',
+                              message, image_path)
+
+
 def _send_notification(cfg: NotifyConfig, title: str, reason: str,
                        image_path: str | None = None,
                        event_key: str | None = None,

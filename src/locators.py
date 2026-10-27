@@ -138,6 +138,10 @@ LOCATORS: dict[str, dict] = {
         'xpath': ['//*[@content-desc="去上课"]']
                ,'ocr': ['去上课']},
     'school_in': {'ocr': ['正在学习']},
+    # 道具提示和标题确认页面后，再按布局点击加号、按黄色包装区分奶和蓝色杯。
+    'school_milk_add_hint': {'ocr': ['使用道具'], 'ocr_region': (0.64, 0.80)},
+    'school_milk_title': {'ocr': ['道具'], 'ocr_region': (0.59, 0.68)},
+    'school_milk_panel': {'ocr': ['高钙奶'], 'ocr_region': (0.59, 0.95)},
     'school_end': {'xpath': ['//*[@content-desc="分享"]']},
     # 毕业标志：当前学园毕业后学校面板没有"去上课"，而是"去找同学玩"；
     # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程

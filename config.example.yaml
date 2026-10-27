@@ -47,6 +47,8 @@ school:
   duration_minutes: 135
   # 可能出现的学习时长（分钟，逗号分隔）；自动按倒计时取最接近的一项
   duration_candidates: 45,135
+  # 每节新课开始后只尝试一次黄色高钙奶；缺货/失败截图并通知，继续学习不重试
+  auto_calcium_milk: false
 
 work:
   # 打工地点（OCR 文字匹配），如：风铃旅社 / 星尘魔法塔 / 彩虹画室
@@ -115,13 +117,17 @@ visit:
   start_time: "00:01"
 
 pk:
+  # 只与名单内好友 PK：填写完整昵称，中英文逗号分隔；留空跳过 PK
+  friend_name: ""
+  # 每轮最多遍历多少位好友，找不到名单目标时按此上限结束
+  max_scan_count: 20
   # 每天 PK 次数，0 为不 PK；每个好友可 PK 3 次，打完自动切换下一个好友
   times_per_day: 15
   # PK 调度时间（HH:MM）：到达后开始处理
   start_time: "00:01"
 
 friend_navigation:
-  # 好友护理/雇佣遍历时，顶部出现“加好友”说明已进入非好友区；默认停止继续翻找
+  # 好友护理/雇佣/PK 遍历时，顶部出现“加好友”说明已进入非好友区；默认停止继续翻找
   stop_at_non_friend: true
   # 为避免页面加载异常或 OCR 偶发误判，至少遍历这么多人后才允许按非好友停止
   min_scan_count: 10

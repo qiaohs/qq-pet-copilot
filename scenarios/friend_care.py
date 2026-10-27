@@ -80,29 +80,6 @@ class FriendCareScenario(VisitScenario):
 
     # ---- 好友导航 ----
 
-    def begin_friend_walk(self) -> None:
-        """只打开一次好友页，并初始化按好友列表顺序遍历所需的状态。"""
-        self._friends = []
-        self._friend_index = 0
-        self._current_friend_x = None
-        self.goto_first_friend()
-        self._rewind_friend_carousel()
-
-    def current_friend(self) -> tuple[str, list[tuple[str, int, int]]]:
-        """返回当前好友描述和当前可见列表，并把新出现的好友并入累积名单。"""
-        visible = self._wait_friend_items(required=True)
-        if not self._friends:
-            self._friends.extend(desc for desc, _, _ in visible if desc)
-            if visible:
-                self._current_friend_x = min(x for _, x, _ in visible)
-        else:
-            for desc, _, _ in visible:
-                if desc and desc not in self._friends:
-                    self._friends.append(desc)
-        if self._friend_index >= len(self._friends):
-            raise RuntimeError('无法确定当前好友')
-        return self._friends[self._friend_index], visible
-
     def switch_to_friend(self, name: str, max_switches: int = MAX_FRIEND_SWITCHES) -> bool:
         """在好友列表里找到名称含 name 的好友并点击切换，返回是否成功。
 

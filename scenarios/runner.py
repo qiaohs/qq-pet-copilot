@@ -665,6 +665,7 @@ class Runner:
         # care.interval_seconds 热加载（care_due 读 self.care.cfg.care.interval_seconds）
         self.care.cfg.care = cfg.care
         self.school.times_per_day = cfg.school.times_per_day
+        self.school.cfg.school.auto_calcium_milk = cfg.school.auto_calcium_milk
         try:
             duration_minutes = int(cfg.school.duration_minutes)
         except (TypeError, ValueError):
@@ -701,6 +702,7 @@ class Runner:
         except ValueError as e:
             log(f'{e}，沿用旧值')
         self.pk.times_per_day = cfg.pk.times_per_day
+        self.pk.cfg.pk = cfg.pk
         self.pk_times = cfg.pk.times_per_day
         try:
             self.pk_start = parse_hhmm(cfg.pk.start_time, 'pk.start_time')

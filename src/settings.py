@@ -32,6 +32,7 @@ DEFAULTS = {
     'school.times_per_day': 0,
     'school.duration_minutes': 135,
     'school.duration_candidates': '45,135',
+    'school.auto_calcium_milk': False,
     'work.location': '风铃旅社',
     'work.times_per_day': 0,
     'work.employ_scroll_limit': 5,
@@ -52,6 +53,8 @@ DEFAULTS = {
     'visit.start_time': '00:01',
     'pk.times_per_day': 15,
     'pk.start_time': '00:01',
+    'pk.friend_name': '',
+    'pk.max_scan_count': 20,
     'friend_care.enabled': False,
     'friend_care.time_range': '14:00-19:30',
     'friend_care.friend_name': '',
@@ -142,9 +145,10 @@ def validate_field(key: str, value):
             return True, DoubleQuotedScalarString(str(value))
         except ValueError:
             return False, DoubleQuotedScalarString(str(default))
-    if key == 'friend_care.friend_name' or key == 'hire_friend.friend_name':
+    if key in ('friend_care.friend_name', 'hire_friend.friend_name', 'pk.friend_name'):
         return True, str(value).strip()
-    if key in ('friend_care.enabled', 'friend_care.post_one_click_care',
+    if key in ('school.auto_calcium_milk', 'friend_care.enabled',
+               'friend_care.post_one_click_care',
                'hire_friend.enabled', 'employed.enabled',
                'employed.off_hours_recall', 'employed.unemployed_reminder',
                'employed.available_reminder',
@@ -181,7 +185,7 @@ def validate_field(key: str, value):
     if key in ('care.energy_threshold', 'care.clean_threshold',
                'friend_care.energy_target', 'friend_care.clean_target'):
         return (True, value) if 0 <= int(value) <= 100 else (False, default)
-    if key in ('friend_care.max_scan_count', 'hire_friend.max_scan_count'):
+    if key in ('friend_care.max_scan_count', 'hire_friend.max_scan_count', 'pk.max_scan_count'):
         try:
             return (True, int(value)) if 1 <= int(value) <= 999 else (False, default)
         except (TypeError, ValueError):

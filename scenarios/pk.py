@@ -3,11 +3,11 @@
 流程（u2 控件定位，分辨率无关）：
 1. 点击 好友（visit_friends）-> 点击 访问（visit）进入第一个好友宠物页
    （好友导航复用 visit.py：累积名单、按顺序切换）
-2. 点击 PK（pk）-> 点击 开始（pk_start）
+2. 仅当前好友完整昵称在 pk.friend_name 名单内且未显示“加好友”时，点击 PK -> 开始
 3. 点开始后 1 秒起整屏 OCR 判断"正在PK"：命中按原本 11 秒等 PK 结束，出现 分享（pk_end）
    即计一次，持久化到 runs/pk_progress.json；匹配不到"正在PK"立即按超时处理点 quit 换好友
 4. 点击 再来一局（pk_again）-> 再点 开始；每个好友最多 PK 3 次
-5. 切换下一个好友继续 PK，直到次数满或没有更多好友
+5. 顺序遍历好友，跳过名单外对象；达到 pk.max_scan_count、名单处理完或次数满即结束
 6. 结束：点 back 回主页面
 
 分轮与状态检查：每局消耗 体力/清洁 各 5 点；一次 run() 最多 PK 16 局
@@ -36,6 +36,8 @@ from src.progress import (
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
 from scenarios.care import CareScenario
+from scenarios.friend_care import parse_friend_names
+from scenarios.friend_features import is_non_friend_page
 from scenarios.visit import FRIEND_ITEM_XPATH, VisitScenario
 
 PK_PER_FRIEND = 3     # 每个好友可 PK 次数
@@ -177,19 +179,47 @@ class PKScenario(VisitScenario):
         return done
 
     def _pk_all(self, max_times: int, today: str, done: int, history: dict) -> int:
-        """从好友面板开始逐好友 PK，直到次数满或没有更多好友，返回新的当天次数。"""
-        self._friends = []        # 累积好友名单（只增不减），见 visit.py
-        self._friend_index = 0    # 访问进入时默认第一个好友
+        """单次遍历，只对配置名单里的好友 PK；缺失目标不扩大范围。"""
+        names = set(parse_friend_names(getattr(self.cfg.pk, 'friend_name', '')))
+        if not names:
+            return done
+        scan_limit = int(getattr(self.cfg.pk, 'max_scan_count', 20))
+        if scan_limit < 1:
+            raise ValueError('pk.max_scan_count 必须大于 0')
+        nav = getattr(self.cfg, 'friend_navigation', None)
+        stop_at_non_friend = bool(getattr(nav, 'stop_at_non_friend', True))
+        min_scan_count = max(1, int(getattr(nav, 'min_scan_count', 10)))
         self._pk_timeout_streak = 0  # 连续 PK 结果超时计数（本轮内连续，成功清零）
-        self.goto_first_friend()
-        while not max_times or done < max_times:
-            done = self.pk_friend(max_times, today, done, history)
-            if max_times and done >= max_times:
+        self.begin_friend_walk()
+        handled = set()
+        scanned = 0
+        while scanned < scan_limit and (not max_times or done < max_times):
+            desc, visible = self.current_friend()
+            scanned += 1
+            non_friend = is_non_friend_page(self.screen())
+            if non_friend and stop_at_non_friend and scanned >= min_scan_count:
+                log(f'PK 已遍历 {scanned} 位并进入非好友区，结束本轮查找')
                 break
-            self.leave_result_page()
-            if not self.next_friend():
+            name = desc.removeprefix('好友 ').strip()
+            if not non_friend and name in names and name not in handled:
+                handled.add(name)
+                log(f'名单 PK 目标: {name}')
+                done = self.pk_friend(max_times, today, done, history)
+                if max_times and done >= max_times:
+                    break
+                self.leave_result_page()
+                visible = None  # 返回好友页后重新读取，避免用旧轮播坐标
+            else:
+                log(f'跳过 PK: {name}（非好友或不在尚待处理的名单中）')
+            if handled == names or scanned >= scan_limit:
+                break
+            if not self.next_friend(visible):
                 log('没有更多好友了')
                 break
+        missing = names - handled
+        if missing:
+            log('本轮未遇到可 PK 的名单好友: ' + '、'.join(sorted(missing)))
+        log(f'名单 PK 遍历结束: {scanned}/{scan_limit} 位，处理 {len(handled)}/{len(names)} 位')
         return done
 
     # ---- 入口 ----
@@ -249,6 +279,10 @@ class PKScenario(VisitScenario):
         """
         if max_times is None:
             max_times = self.times_per_day
+        names = parse_friend_names(getattr(self.cfg.pk, 'friend_name', ''))
+        if not names:
+            log('PK 名单为空，跳过 PK（仅允许指定好友）')
+            return False
         today, done, history = load_progress(PROGRESS_FILE)
         log_history(history, today)
         if max_times and done >= max_times:
@@ -257,10 +291,12 @@ class PKScenario(VisitScenario):
         start_done = done
         round_target = self._round_limit(max_times, done)
         self.ensure_main_page()
-        self._prepare_stats(round_target - done)
-        done = self._pk_all(round_target, today, done, history)
-        self.close()  # 点 back 收掉好友相关页面，再确认回主页面
-        self.ensure_main_page()
+        self._prepare_stats(min(round_target - done, len(names) * PK_PER_FRIEND))
+        try:
+            done = self._pk_all(round_target, today, done, history)
+        finally:
+            self.close()
+            self.ensure_main_page()
         return done > start_done
 
 if __name__ == '__main__':

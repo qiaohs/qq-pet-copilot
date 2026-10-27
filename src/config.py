@@ -96,6 +96,8 @@ class SchoolConfig:
     duration_minutes: int = 135
     # 可能出现的课程时长，逗号分隔；开课倒计时/实际耗时取最接近的一项
     duration_candidates: str = "45,135"
+    # 仅在新课开始时尝试一次黄色高钙奶，失败继续学习；中途接管旧课不执行
+    auto_calcium_milk: bool = False
 
 
 @dataclass
@@ -183,6 +185,9 @@ class PkConfig:
     times_per_day: int = 15
     # PK 调度时间（HH:MM），到达后开始处理
     start_time: str = "00:01"
+    # 只 PK 此名单中的好友，完整昵称匹配；中英文逗号分隔，留空不 PK
+    friend_name: str = ""
+    max_scan_count: int = 20
 
 
 @dataclass

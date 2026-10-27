@@ -41,6 +41,7 @@ from src.progress import (
     set_current_school,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
+from scenarios.school_milk import drink_milk_once
 
 # 属性点 -> 三栏选择框定位名（力量/智力/魅力 对应第一/二/三框；初级/中级学园用）
 ATTRIBUTE_COURSES = {
@@ -265,8 +266,10 @@ class SchoolScenario(DeviceScenario):
         self._class_started_at = time.monotonic()
         self._class_duration_detected = False
         self._detected_duration_minutes = None
+        self._milk_attempted = False
         self.click_until_gone_or_see('school_start', 'school_in', '开始学习')
         log('已进入课堂，等待下课...')
+        drink_milk_once(self)
         self._detect_duration_from_remaining()
         if self.defer_wait:
             # 延时收尾：进行中登记 pending（到点由调度器 finish_pending 收尾）或
