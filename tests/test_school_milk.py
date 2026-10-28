@@ -14,10 +14,41 @@ class SchoolMilkTest(TestCase):
         scen = SimpleNamespace(
             cfg=SimpleNamespace(school=SimpleNamespace(auto_calcium_milk=enabled)),
             screen=Mock(return_value=np.zeros((1440, 720, 3), dtype=np.uint8)),
-            see=Mock(return_value=(360, 922, 1)),
+            see=Mock(side_effect=lambda name, _screen: {
+                'school_in': (171, 855, 1),
+                'school_milk_add_hint': (530, 1025, 1),
+                'school_milk_title': (360, 922, 1),
+                'school_milk_panel': (360, 1305, 1),
+            }.get(name)),
             click=Mock(),
         )
         return scen
+
+    def test_entry_follows_learning_header_when_panel_moves_down(self):
+        scen = self.make_scenario()
+        scen.see.side_effect = lambda name, _screen: {
+            'school_in': (171, 998, 1),
+            'school_milk_add_hint': (530, 1155, 1),
+            'school_milk_title': (360, 922, 1),
+            'school_milk_panel': (360, 1305, 1),
+        }.get(name)
+        with patch('scenarios.school_milk.find_yellow_milk',
+                   side_effect=[None, (350, 1053), (315, 1150)]), \
+                patch('src.ocr.ocr_texts', return_value=[]), \
+                patch('scenarios.school_milk._report') as report, \
+                patch('scenarios.school_milk.time.sleep'):
+            drink_milk_once(scen)
+            drink_milk_once(scen)
+        self.assertEqual(scen.click.call_args_list[0].args, (316, 1168))
+        self.assertEqual(scen.click.call_count, 2)
+        report.assert_not_called()
+
+    def test_used_milk_region_follows_moved_learning_header(self):
+        screen = np.zeros((1440, 720, 3), dtype=np.uint8)
+        screen[1140:1190, 300:340] = (255, 255, 220)
+        screen[1140:1150, 300:330] = (255, 205, 30)
+        self.assertIsNone(find_yellow_milk(screen, used=True))
+        self.assertIsNotNone(find_yellow_milk(screen, used=True, anchor_y=998))
 
     def test_yellow_milk_can_be_large_or_small_and_blue_is_excluded(self):
         for size in (20, 60):

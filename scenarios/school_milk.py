@@ -14,7 +14,8 @@ from src.progress import log
 from src.scenario import CLICK_INTERVAL
 
 
-def find_yellow_milk(screen, *, used: bool = False) -> tuple[int, int] | None:
+def find_yellow_milk(screen, *, used: bool = False,
+                     anchor_y: int | None = None) -> tuple[int, int] | None:
     """在已确认的道具面板内找黄色奶，不依赖选中后的大小或奶盒图案。
 
     面板底色为深色，黄色高钙奶同时有黄色与浅色包装；蓝色杯没有黄色。
@@ -22,7 +23,12 @@ def find_yellow_milk(screen, *, used: bool = False) -> tuple[int, int] | None:
     """
     height, width = screen.shape[:2]
     rgb = cv2.resize(screen[:, :, :3], (720, 1440), interpolation=cv2.INTER_AREA)
-    x1, y1, x2, y2 = (245, 975, 390, 1085) if used else (155, 995, 690, 1205)
+    anchor = (855 if used else 922) if anchor_y is None else round(anchor_y * 1440 / height)
+    x1, y1, x2, y2 = ((245, anchor + 120, 390, anchor + 230) if used
+                      else (155, anchor + 73, 690, anchor + 283))
+    y1, y2 = max(0, y1), min(1370, y2)
+    if y2 <= y1:
+        return None
     roi = rgb[y1:y2, x1:x2]
     hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
     yellow = cv2.inRange(hsv, (15, 95, 130), (39, 255, 255))
@@ -75,21 +81,29 @@ def drink_milk_once(scen) -> None:
     panel_open = False
     try:
         screen = scen.screen()
-        if not scen.see('school_in', screen):
+        learning = scen.see('school_in', screen)
+        if not learning:
             raise RuntimeError('开课后未确认正在学习，跳过喝奶')
-        if find_yellow_milk(screen, used=True):
+        if find_yellow_milk(screen, used=True, anchor_y=learning[1]):
             log('本节已显示黄色高钙奶，跳过喝奶')
             return
-        if not scen.see('school_milk_add_hint', screen):
+        hint = scen.see('school_milk_add_hint', screen)
+        if not hint:
             raise RuntimeError('未确认学习道具入口提示，跳过喝奶')
         height, width = screen.shape[:2]
-        scen.click(round(width * 316 / 720), round(height * 1025 / 1440))
+        # 学习标题跟随整个面板移动；相对标题定位加号，避免使用旧面板的绝对高度。
+        plus_y = learning[1] + round(height * 170 / 1440)
+        if hint[0] < width * 0.5 or abs(hint[1] - plus_y) > height * 0.07:
+            raise RuntimeError('学习标题与道具提示位置不一致，跳过喝奶')
+        log(f'学习道具入口: 标题 y={learning[1]}，加号 y={plus_y}')
+        scen.click(round(width * 316 / 720), plus_y)
         time.sleep(CLICK_INTERVAL)
         screen = scen.screen()
-        panel_open = bool(scen.see('school_milk_title', screen))
+        title = scen.see('school_milk_title', screen)
+        panel_open = bool(title)
         if not (panel_open and scen.see('school_milk_panel', screen)):
             raise RuntimeError('点击加号后未确认高钙奶道具面板')
-        milk = find_yellow_milk(screen)
+        milk = find_yellow_milk(screen, anchor_y=title[1])
         if milk is None:
             raise RuntimeError('未找到可用的黄色高钙奶，可能已用完或图像未识别')
         # 库存数字优先从黄色奶盒附近取；不读右边蓝色杯的数字。
@@ -107,7 +121,8 @@ def drink_milk_once(scen) -> None:
         scen.click(*milk)
         time.sleep(CLICK_INTERVAL)
         screen = scen.screen()
-        if find_yellow_milk(screen, used=True) and scen.see('school_in', screen):
+        learning = scen.see('school_in', screen)
+        if learning and find_yellow_milk(screen, used=True, anchor_y=learning[1]):
             panel_open = False
             log('课堂道具栏已显示黄色高钙奶，结束本次喝奶流程')
         else:
@@ -120,7 +135,8 @@ def drink_milk_once(scen) -> None:
             try:
                 screen = scen.screen()
                 title = scen.see('school_milk_title', screen)
-                if title:
+                # “使用道具”也包含“道具”，只有高钙奶说明仍在时才能认作道具面板。
+                if title and scen.see('school_milk_panel', screen):
                     height, width = screen.shape[:2]
                     scen.click(round(width * 658 / 720), title[1])
                     time.sleep(CLICK_INTERVAL)
