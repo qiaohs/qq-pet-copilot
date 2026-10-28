@@ -4,12 +4,18 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from scenarios.school_milk import drink_milk_once, find_yellow_milk
+from scenarios.school_milk import drink_milk_once, find_yellow_milk, read_milk_usage
 from scenarios.school import SchoolScenario
 from src.settings import validate_field
 
 
 class SchoolMilkTest(TestCase):
+    def setUp(self):
+        # 普通流程测试不加载真实 OCR 引擎；识别结果按各个场景单独注入。
+        patcher = patch('scenarios.school_milk.ocr_screen', return_value=[])
+        self.ocr = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_scenario(self, enabled=True):
         scen = SimpleNamespace(
             cfg=SimpleNamespace(school=SimpleNamespace(auto_calcium_milk=enabled)),
@@ -21,8 +27,47 @@ class SchoolMilkTest(TestCase):
                 'school_milk_panel': (360, 1305, 1),
             }.get(name)),
             click=Mock(),
+            go_back=Mock(return_value=True),
         )
         return scen
+
+    def test_usage_text_requires_positive_consumed_count_and_context(self):
+        screen = np.zeros((1440, 720, 3), dtype=np.uint8)
+        for text, expected in [('已喝 1/45 杯', (1, 45)), ('已喝1／135杯', (1, 135)),
+                               ('已喝0/45杯', None), ('已喝2/1杯', None),
+                               ('限1杯 304', None), ('1/45', None)]:
+            with self.subTest(text=text):
+                self.ocr.return_value = [(text, 360, 950, 0.95)]
+                self.assertEqual(read_milk_usage(screen), expected)
+        self.ocr.return_value = [('已喝', 300, 950, 0.95), ('1/45', 360, 950, 0.95),
+                                 ('杯', 420, 950, 0.95)]
+        self.assertEqual(read_milk_usage(screen), (1, 45))
+
+    def test_success_counter_does_not_require_returned_classroom_and_returns_once(self):
+        scen = self.make_scenario()
+        with patch('scenarios.school_milk.read_milk_usage', side_effect=[None, (1, 45)]), \
+                patch('scenarios.school_milk.find_yellow_milk',
+                      side_effect=[None, (350, 1053)]), \
+                patch('src.ocr.ocr_texts', return_value=[]), \
+                patch('scenarios.school_milk._report') as report, \
+                patch('scenarios.school_milk.time.sleep'):
+            drink_milk_once(scen)
+            drink_milk_once(scen)
+        report.assert_not_called()
+        self.assertEqual(scen.click.call_count, 2)
+        scen.go_back.assert_called_once()
+
+    def test_existing_usage_counter_prevents_second_drink(self):
+        scen = self.make_scenario()
+        self.ocr.return_value = [('已喝1/45杯', 360, 950, 0.95)]
+        with patch('scenarios.school_milk.find_yellow_milk', return_value=None), \
+                patch('scenarios.school_milk.time.sleep'), \
+                patch('scenarios.school_milk._report') as report:
+            drink_milk_once(scen)
+        self.assertEqual(scen.click.call_args_list[0].args, (316, 1025))
+        self.assertEqual(scen.click.call_count, 1)
+        scen.go_back.assert_called_once()
+        report.assert_not_called()
 
     def test_entry_follows_learning_header_when_panel_moves_down(self):
         scen = self.make_scenario()

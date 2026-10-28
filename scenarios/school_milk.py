@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import re
 from datetime import datetime
 
 import cv2
@@ -10,8 +11,23 @@ from PIL import Image
 
 from src.config import APP_ROOT
 from src.notify import send_school_milk_issue
+from src.locators import ocr_screen
 from src.progress import log
 from src.scenario import CLICK_INTERVAL
+
+
+def read_milk_usage(screen) -> tuple[int, int] | None:
+    """读取道具面板的“已喝 1/45 杯”；库存数量、限1杯都不能作为成功标志。"""
+    height = screen.shape[0]
+    text = ''.join(t for t, _x, y, score in ocr_screen(screen)
+                   if y >= height * 0.5 and score >= 0.5)
+    text = re.sub(r'\s+', '', text).replace('／', '/')
+    match = re.search(r'已喝(\d+)/(\d+)杯?', text)
+    if match:
+        used, limit = map(int, match.groups())
+        if 0 < used <= limit:
+            return used, limit
+    return None
 
 
 def find_yellow_milk(screen, *, used: bool = False,
@@ -103,6 +119,9 @@ def drink_milk_once(scen) -> None:
         panel_open = bool(title)
         if not (panel_open and scen.see('school_milk_panel', screen)):
             raise RuntimeError('点击加号后未确认高钙奶道具面板')
+        if read_milk_usage(screen):
+            log('道具面板已显示本节喝奶记录，跳过再次使用')
+            return
         milk = find_yellow_milk(screen, anchor_y=title[1])
         if milk is None:
             raise RuntimeError('未找到可用的黄色高钙奶，可能已用完或图像未识别')
@@ -121,24 +140,30 @@ def drink_milk_once(scen) -> None:
         scen.click(*milk)
         time.sleep(CLICK_INTERVAL)
         screen = scen.screen()
-        learning = scen.see('school_in', screen)
-        if learning and find_yellow_milk(screen, used=True, anchor_y=learning[1]):
-            panel_open = False
-            log('课堂道具栏已显示黄色高钙奶，结束本次喝奶流程')
+        usage = read_milk_usage(screen)
+        if usage:
+            log(f'高钙奶使用成功：已喝 {usage[0]}/{usage[1]} 杯')
         else:
-            _report(scen, '点击黄色高钙奶后未确认使用成功，继续学习', screen)
+            learning = scen.see('school_in', screen)
+            if learning and find_yellow_milk(screen, used=True, anchor_y=learning[1]):
+                panel_open = False
+                log('课堂道具栏已显示黄色高钙奶，结束本次喝奶流程')
+            else:
+                _report(scen, '点击黄色高钙奶后未确认使用成功，继续学习', screen)
     except Exception as exc:
         _report(scen, str(exc))
     finally:
         if panel_open:
-            # 只收起道具面板；不用系统返回，避免退出课堂或宠物。
+            # 先从道具面板返回课堂。计时/pending 登记后，学习场景再返回主页；
+            # 不能在这里盲按两次，否则会在读取学习倒计时前离开课堂。
             try:
                 screen = scen.screen()
                 title = scen.see('school_milk_title', screen)
                 # “使用道具”也包含“道具”，只有高钙奶说明仍在时才能认作道具面板。
                 if title and scen.see('school_milk_panel', screen):
-                    height, width = screen.shape[:2]
-                    scen.click(round(width * 658 / 720), title[1])
+                    if not scen.go_back(screen=screen):
+                        height, width = screen.shape[:2]
+                        scen.click(round(width * 658 / 720), title[1])
                     time.sleep(CLICK_INTERVAL)
             except Exception as exc:
                 log(f'收起高钙奶道具面板失败: {exc}；本节不再尝试喝奶')
