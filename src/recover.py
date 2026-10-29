@@ -298,6 +298,17 @@ def _adb_back_online(adb: Device) -> None:
     log('模拟器重启完成，已开机')
 
 
+def _clear_update_during_recovery(dev: U2Device) -> bool:
+    """恢复期间的页面等待异常同样检查系统弹窗，复用场景里的整组处理。"""
+    from .scenario import DeviceScenario
+
+    try:
+        return DeviceScenario(dev).dismiss_system_update()
+    except Exception as exc:
+        log(f'恢复期间检查系统更新弹窗失败: {exc}')
+        return False
+
+
 def _click_pet_entry(dev: U2Device) -> None:
     """等 Q宠-* 入口出现并紧凑双击进入。
 
@@ -309,6 +320,7 @@ def _click_pet_entry(dev: U2Device) -> None:
     log(f'等待 QQ 宠物入口（{PET_ENTRY_DESC_PREFIX}*）出现...')
     deadline = time.monotonic() + PET_ENTRY_TIMEOUT
     while True:
+        _clear_update_during_recovery(dev)
         ui = dev.d(descriptionStartsWith=PET_ENTRY_DESC_PREFIX)
         if ui.exists:
             x, y = ui.center()
@@ -340,7 +352,13 @@ def _compact_double_click(dev: U2Device, x: int, y: int) -> None:
 def _wait_main_page(dev: U2Device) -> bool:
     """等宠物主页（"宠物状态"容器）出现；QQ/游戏冷启动加载可能要十几秒。"""
     deadline = time.monotonic() + PET_PAGE_TIMEOUT
+    extended = False
     while time.monotonic() < deadline:
+        if _clear_update_during_recovery(dev):
+            if not extended:
+                deadline = time.monotonic() + PET_PAGE_TIMEOUT
+                extended = True
+            continue
         if dev.d(description='宠物状态').exists:
             log('已进入宠物页面')
             return True

@@ -69,6 +69,11 @@ def find_yellow_milk(screen, *, used: bool = False,
 def _report(scen, reason: str, screen=None) -> None:
     """通知和存图失败也只记日志，不能把可选道具故障升级成学习失败。"""
     log(f'高钙奶: {reason}；本节不再尝试')
+    try:
+        if scen.dismiss_system_update():
+            log('喝奶异常后已清理系统更新弹窗；本节仍不补喝')
+    except Exception as exc:
+        log(f'喝奶异常后检查系统弹窗失败: {exc}')
     path = None
     try:
         screen = scen.screen() if screen is None else screen
@@ -167,3 +172,7 @@ def drink_milk_once(scen) -> None:
                     time.sleep(CLICK_INTERVAL)
             except Exception as exc:
                 log(f'收起高钙奶道具面板失败: {exc}；本节不再尝试喝奶')
+                try:
+                    scen.dismiss_system_update()
+                except Exception as update_exc:
+                    log(f'收起道具异常后检查系统弹窗失败: {update_exc}')

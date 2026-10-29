@@ -403,7 +403,18 @@ class Runner:
         场景 run() 正常返回 False（达当天上限等）不算失败。
         """
         def run_and_reset():
-            result = self._run_round(scen)
+            try:
+                result = self._run_round(scen)
+            except (StatBlocked, PKDeferred, TaskDeferred):
+                raise
+            except Exception:
+                if not self._clear_system_update(f'{name}异常后', scen):
+                    raise
+                if name == '被雇佣检查':
+                    # 召回仍遵守短间隔排队重试，不因弹窗处理而原地重复召回。
+                    raise
+                log(f'{name}: 系统弹窗已清理，继续原任务')
+                result = self._run_round(scen)
             self._reset_failure_streak(name)
             return result
 
@@ -450,6 +461,15 @@ class Runner:
         if fatal:
             self._alert_and_exit(last, f'fatal_task:{name}')
         raise ScenarioFailed(last)
+
+    def _clear_system_update(self, stage: str, scen=None) -> bool:
+        """集中异常入口；检测本身失败时继续原恢复链，不掩盖原任务异常。"""
+        try:
+            scen = self.school if scen is None else scen
+            return bool(scen.dismiss_system_update())
+        except Exception as exc:
+            log(f'{stage}检查系统更新弹窗失败: {exc}')
+            return False
 
     def _reset_failure_streak(self, name: str) -> None:
         name = '被雇佣' if name == '被雇佣检查' else name
@@ -579,6 +599,9 @@ class Runner:
     def recover(self) -> bool:
         """异常恢复：重启设备/模拟器（或重启游戏）-> 启动 QQ -> 回宠物页面，
         并刷新各场景的设备连接。返回是否成功。"""
+        if self._clear_system_update('重启恢复前'):
+            log('已清除系统更新弹窗，先继续调度，本次无需重启')
+            return True
         now = time.monotonic()
         if self.recoveries >= RECOVERY_LIMIT:
             if now - self.last_recovery_at < RECOVERY_RESET_AFTER:
@@ -733,6 +756,13 @@ class Runner:
                 return
         except Exception as e:
             log(f'启动检查主页面识别异常: {e}')
+        if self._clear_system_update('启动检查失败后'):
+            try:
+                self.school.ensure_main_page()
+                log('启动检查：系统弹窗已清理，继续使用当前宠物页面')
+                return
+            except Exception as exc:
+                log(f'启动清理弹窗后仍未回到主页: {exc}')
         log('启动检查：未识别到宠物主页面，走重启游戏分支（启动 QQ -> 点宠物入口）')
         try:
             dev = reenter_pet(self.school.dev.adb, '重启游戏')

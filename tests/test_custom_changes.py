@@ -294,10 +294,13 @@ class CustomChangesTest(TestCase):
             'system_software_update': (10, 10, 1.0),
             'system_update_later': (360, 1100, 1.0),
         }
-        scen.see = lambda name, *_args: hits.get(name)
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='cleared'))
+        scen.see = lambda name, _screen=None, source=None: (
+            None if source == 'cleared' else hits.get(name))
 
-        self.assertEqual(
-            scen._handle_failed_back_blocker(object(), object()), '弹窗')
+        with patch('src.scenario.time.sleep'):
+            self.assertEqual(
+                scen._handle_failed_back_blocker(object(), object()), '弹窗')
         scen.click.assert_called_once_with(360, 1100)
 
     def test_failed_back_dismisses_wlan_download_with_cancel(self):
@@ -307,10 +310,13 @@ class CustomChangesTest(TestCase):
             'system_wlan_download': (10, 10, 1.0),
             'system_dialog_cancel': (220, 1100, 1.0),
         }
-        scen.see = lambda name, *_args: hits.get(name)
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='cleared'))
+        scen.see = lambda name, _screen=None, source=None: (
+            None if source == 'cleared' else hits.get(name))
 
-        self.assertEqual(
-            scen._handle_failed_back_blocker(object(), object()), '弹窗')
+        with patch('src.scenario.time.sleep'):
+            self.assertEqual(
+                scen._handle_failed_back_blocker(object(), object()), '弹窗')
         scen.click.assert_called_once_with(220, 1100)
 
     def test_low_energy_found_after_failed_back_cares_then_retries(self):

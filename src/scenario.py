@@ -265,25 +265,56 @@ class DeviceScenario:
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('无法回到主页面')
 
+    def dismiss_system_update(self, screen=None, source=None) -> bool:
+        """异常时清理整组系统更新弹窗：稍后 -> 等待后续提示 -> 取消。
+
+        只检查系统标题对应的动作，不能只凭“取消”点击游戏里的按钮。
+        控件树按需刷新；正常任务不主动轮询，异常及恢复阶段才调用。
+        """
+        if source is None:
+            source = self.dev.hierarchy()
+        first = self.see('system_software_update', screen, source)
+        second = self.see('system_wlan_download', screen, source)
+        if not first and not second:
+            return False
+        if first:
+            later = self.see('system_update_later', screen, source)
+            if not later:
+                raise RuntimeError('检测到系统软件更新弹窗，但未找到“稍后”')
+            log('异常检查：检测到手机“软件更新”弹窗，点击“稍后”')
+            self.click(later[0], later[1])
+            # 后续 WLAN 提示通常延迟一秒出现，不能点完“稍后”立即返回任务。
+            for attempt in range(3):
+                time.sleep(1.0)
+                source = self.dev.hierarchy()
+                screen = None
+                second = self.see('system_wlan_download', screen, source)
+                if second:
+                    break
+                if self.see('system_software_update', screen, source) and attempt == 2:
+                    raise RuntimeError('点击“稍后”后系统更新弹窗仍未关闭')
+        if second:
+            cancel = self.see('system_dialog_cancel', screen, source)
+            if not cancel:
+                raise RuntimeError('检测到 WLAN 自动下载提示，但未找到“取消”')
+            log('异常检查：检测到“开启 WLAN 自动下载”弹窗，点击“取消”')
+            self.click(cancel[0], cancel[1])
+            time.sleep(0.5)
+            source = self.dev.hierarchy()
+            if (self.see('system_software_update', None, source)
+                    or self.see('system_wlan_download', None, source)):
+                raise RuntimeError('系统更新弹窗组尚未完全关闭')
+        log('系统更新弹窗组已清理')
+        return True
+
     def _handle_failed_back_blocker(self, screen=None, source=None) -> str | None:
         """返回操作无效后处理已知阻塞页；正常导航不会调用。
 
         返回 ``体力``/``清洁`` 表示已退出不足提示页，调用方回主页后必须护理；
         返回 ``弹窗`` 表示已关闭手机系统弹窗；没有命中返回 None。
         """
-        # 手机系统更新弹窗按返回键不会消失。先核对标题，避免仅凭通用按钮误点。
-        if self.see('system_software_update', screen, source):
-            later = self.see('system_update_later', screen, source)
-            if later:
-                log('返回无效：检测到手机“软件更新”弹窗，点击“稍后”')
-                self.click(later[0], later[1])
-                return '弹窗'
-        if self.see('system_wlan_download', screen, source):
-            cancel = self.see('system_dialog_cancel', screen, source)
-            if cancel:
-                log('返回无效：检测到“开启 WLAN 自动下载”弹窗，点击“取消”')
-                self.click(cancel[0], cancel[1])
-                return '弹窗'
+        if self.dismiss_system_update(screen, source):
+            return '弹窗'
 
         # 任务面板的不足提示会顶掉开始按钮。这里不能只关闭后继续：回主页后
         # 必须护理，并用 StatBlocked 让调度器重试当前任务。
