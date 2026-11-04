@@ -908,6 +908,36 @@ class ScheduleDiffDialog(QDialog):
         layout.addLayout(row)
 
 
+class ScheduleDeleteDialog(QDialog):
+    """不用遮罩动画或嵌套 exec 的方案删除确认窗口。"""
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('删除调度方案')
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setObjectName('scheduleDeleteDialog')
+        background = '#272727' if isDarkTheme() else '#ffffff'
+        self.setStyleSheet(f'#scheduleDeleteDialog {{ background-color: {background}; }}')
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(18)
+        message = BodyLabel(f'删除“{name}”？\n当前配置和任务进度会保留。', self)
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.cancel_button = PushButton('取消', self)
+        self.cancel_button.setDefault(True)
+        self.cancel_button.clicked.connect(self.reject)
+        self.delete_button = PushButton('删除方案', self, FIF.DELETE)
+        self.delete_button.setAutoDefault(False)
+        self.delete_button.clicked.connect(self.accept)
+        buttons.addWidget(self.cancel_button)
+        buttons.addWidget(self.delete_button)
+        layout.addLayout(buttons)
+        self.cancel_button.setFocus()
+
+
 class MainWindow(MSFluentWindow):
     # 检查更新结果回投 GUI 线程：(manual, UpdateCheckResult)
     _sig_update_result = pyqtSignal(object)
@@ -1700,6 +1730,7 @@ class MainWindow(MSFluentWindow):
         profiles = QHBoxLayout()
         profiles.addWidget(BodyLabel('调度方案'))
         self._profile_name = _NoInsertEditableComboBox()
+        self._profile_delete_dialog = None
         self._profile_name.setPlaceholderText('选择方案或填写新名称')
         self._profile_name.setMinimumWidth(220)
         self._profile_name.setMaximumWidth(320)
@@ -1742,9 +1773,15 @@ class MainWindow(MSFluentWindow):
     def _reload_profile_names(self, selected=None):
         try:
             store = schedule_profiles.load_store()
-            self._profile_name.clear()
-            self._profile_name.addItems(list(store['profiles']))
-            self._profile_name.setCurrentText(selected or store.get('active', ''))
+            # 刷新列表期间不逐项触发配置比较，完成后只更新一次说明。
+            was_blocked = self._profile_name.blockSignals(True)
+            try:
+                self._profile_name.clear()
+                self._profile_name.addItems(list(store['profiles']))
+                self._profile_name.setCurrentText(selected or store.get('active', ''))
+            finally:
+                self._profile_name.blockSignals(was_blocked)
+            self._describe_schedule_profile(self._profile_name.currentText())
         except Exception as e:
             self._profile_feedback(f'读取调度方案失败: {e}')
 
@@ -1823,14 +1860,36 @@ class MainWindow(MSFluentWindow):
             self._profile_feedback(f'应用方案失败: {e}')
 
     def _delete_schedule_profile(self):
+        if self._profile_delete_dialog is not None:
+            self._profile_delete_dialog.raise_()
+            self._profile_delete_dialog.activateWindow()
+            return
         name = self._profile_name.currentText().strip()
         try:
             store = schedule_profiles.load_store()
             if name not in store['profiles']:
                 self._profile_feedback('请选择要删除的已保存方案')
                 return
-            box = MessageBox('删除调度方案', f'删除“{name}”？当前配置和任务进度会保留。', self)
-            if not box.exec():
+            box = ScheduleDeleteDialog(name, self)
+            self._profile_delete_dialog = box
+            box.finished.connect(lambda result: self._finish_delete_schedule_profile(
+                result, name, store['profiles'][name], box))
+            box.open()
+        except Exception as e:
+            self._profile_feedback(f'打开删除确认失败: {e}')
+
+    def _finish_delete_schedule_profile(self, result, name, original, dialog):
+        try:
+            if result != QDialog.DialogCode.Accepted:
+                return
+            # 弹窗打开期间仍可能有别的窗口保存方案，不能写回打开时的整份旧快照。
+            store = schedule_profiles.load_store()
+            if name not in store['profiles']:
+                self._reload_profile_names()
+                self._profile_feedback(f'方案“{name}”已经删除')
+                return
+            if store['profiles'][name] != original:
+                self._profile_feedback('该方案在确认期间发生了变化，请重新确认后删除')
                 return
             del store['profiles'][name]
             if store.get('active') == name:
@@ -1840,6 +1899,10 @@ class MainWindow(MSFluentWindow):
             self._profile_feedback(f'已删除方案“{name}”，当前安排保留')
         except Exception as e:
             self._profile_feedback(f'删除方案失败: {e}')
+        finally:
+            if self._profile_delete_dialog is dialog:
+                self._profile_delete_dialog = None
+            dialog.deleteLater()
 
     @staticmethod
     def _clock_to_time(value):
