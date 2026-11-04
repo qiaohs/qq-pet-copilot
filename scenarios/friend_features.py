@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-import time
+from src.runtime_control import clock as time
 import base64
 import json
 import zlib

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
+from .runtime_control import clock as time
 
 from .adb.device import Device
 from .config import EmulatorConfig

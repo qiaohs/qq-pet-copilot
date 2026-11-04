@@ -68,10 +68,11 @@
 
 import os
 import sys
-import time
 from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src.adb.device import Device
 from src.coins import read_coins
@@ -626,6 +627,13 @@ class Runner:
         log('恢复完成，继续调度')
         return True
 
+    def _schedule_changed(self) -> bool:
+        from src.schedule_profiles import capture
+        current = capture(self._last_cfg)
+        previous = getattr(self, '_schedule_snapshot', None)
+        self._schedule_snapshot = current
+        return previous is not None and previous != current
+
     def reload_config(self) -> None:
         """每轮重新读取 config.yaml，设置页热修改无需重启即生效（adb 连接除外）。
 
@@ -787,6 +795,11 @@ class Runner:
             try:
                 # 热修改：每轮调度前重读配置，设置页存盘最迟下一轮生效
                 self.reload_config()
+                if self._schedule_changed():
+                    school_dead = work_dead = adventure_dead = False
+                    self.visit_dead = self.pk_dead = False
+                    self.friend_care_dead = self.hire_friend_dead = False
+                    log('调度安排已变化，按新配置重新判断配额；保留进度与失败重试间隔')
                 # 跨天（进度按天持久化、第二天清零）：清除各任务"当天不可继续"标记，
                 # 否则学习在 23:59 学到当天上限后，第二天会一直不调度（只能打工/退出）
                 today = datetime.now().date()
@@ -1150,6 +1163,10 @@ class TaskQueueRunner(Runner):
 
     def _apply_tasks_config(self, tasks: dict, order: list) -> None:
         """按最新配置刷新任务列表与执行顺序（支持热修改 tasks.order）。"""
+        if self._schedule_changed():
+            for task in tasks.values():
+                task.dead = False
+            log('调度安排已变化，按新配置重新判断配额；保留进行中活动与失败重试间隔')
         tcfg = self._last_cfg.tasks
         new_order = []
         for raw_key in tcfg.order.split('>'):
@@ -1802,6 +1819,8 @@ def run_scheduler(use_opener: bool, opener_serial: str | None = None,
                   skip_opener: bool = False) -> None:
     """按 config.yaml 的 runner.engine 选择调度引擎运行（控制台与 GUI 打包后的
     --runner 子进程共用，保证两边引擎一致）。"""
+    from src.runtime_control import start_control_listener
+    start_control_listener()
     engine = str(getattr(load_config().runner, 'engine', 'task_queue')).strip()
     if engine not in ('task_queue', 'legacy'):
         log(f'runner.engine 配置无效: {engine!r}，使用默认 task_queue')

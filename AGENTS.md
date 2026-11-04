@@ -75,6 +75,17 @@ $PY build.py --emulator          # 模拟器版（内置 frida 客户端；frida
 
 ## 关键约定（改动时必须遵守）
 
+- **手动暂停**：GUI 用调度器 stdin 的 `pause/resume` 指令，`src/runtime_control.py`
+  协作暂停，保留调用栈并独立在 300 秒后恢复。场景/恢复的等待用该模块的 `clock`，
+  内部 monotonic 超时扣除暂停时间；真实游戏时长统计用 `real_monotonic`，日历调度与
+  pending 截止时间仍用真实时间。单次点击 down/up 是不可分割的短操作，不能停在中间；
+  长搓洗暂停时抬手、恢复时按住原点。暂停不抛任务异常、不重跑任务/喝奶。
+- **命名方案**：`src/schedule_profiles.py` 白名单保存调度参数到本地 runs，
+  不含好友名单/快捷短语/连接/推送凭据。应用先预览差异并再检查期间有无人工改动，
+  增量写入配置且保留注释顺序；原子替换避免热加载读到半份配置。切换只清当天不可继续的
+  内存判定，重新按现有进度/新配额判断，不清 pending、持久化进度或失败退避。
+- **活动结算返回**：学习/打工/冒险及被雇佣检查共用 `close_activity_settlement`，
+  用手机返回键并等待关闭确认，避免点击落在底部导航栏的 `quit`；确认后才计数。
 - **定位方式**：新 UI 元素登记到 `src/locators.py` 的 `LOCATORS`（沿用 `xxx_in` 进行中标志、
   `xxx_end` 结束标志、`quit`、`back`、`main_sign` 命名）。优先 xpath / u2 选择器
   （`main_sign` 是 xpath `//*[@content-desc="金币胶囊"]` 检测主页面——只有自己主页面

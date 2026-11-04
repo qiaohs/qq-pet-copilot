@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-import time
+from ..runtime_control import clock as time, controller
 
 # Windows 下隐藏 adb 子进程的命令行窗口（exe 无控制台模式下每次调用都会闪窗）
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -36,6 +36,7 @@ class Device:
     # ---- 基础命令 ----
 
     def _run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        controller.checkpoint()
         cmd = [self.adb]
         if self.serial:
             cmd += ["-s", self.serial]
@@ -52,6 +53,7 @@ class Device:
 
     def online_devices(self) -> list[str]:
         """返回在线设备序列号列表（不依赖 self.serial）。"""
+        controller.checkpoint()
         proc = subprocess.run(
             [self.adb, "devices"], capture_output=True, timeout=30, check=True,
             creationflags=_NO_WINDOW,
@@ -83,6 +85,7 @@ class Device:
         这里先 connect 一下。adb connect 不区分设备，不能带 -s；失败不抛错
         （可能本来就已连接，交给后续 ensure_connected 判断）。
         """
+        controller.checkpoint()
         target = serial or self.serial
         if not target or ":" not in target:
             return

@@ -17,10 +17,11 @@
 import os
 import re
 import sys
-import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 import numpy as np
 
@@ -377,8 +378,16 @@ class CareScenario(DeviceScenario):
             if self._care_item('feed_10', source) or self.see('exchange_food', source=source):
                 break
             log(f'等待喂食面板加载 ({attempt}/{panel_attempts})')
+            if attempt % 3 == 0 and attempt < panel_attempts:
+                # 只重找入口；已出现道具/兑换面板时上方已退出等待，避免重复操作。
+                feed = self.see('feed', source=source)
+                if feed:
+                    log('喂食面板仍未打开，重新点击喂食入口')
+                    self.click(feed[0], feed[1])
             time.sleep(CLICK_INTERVAL)
             source = self.dev.hierarchy()
+        else:
+            raise RuntimeError('喂食面板未打开（已补点入口），跳过兑换并交给护理重试')
         exchanged = False  # 每次喂食最多兑换一次（99 个足够），防兑换后仍无 feed_10 死循环
         for attempt in range(1, MAX_FEED_ATTEMPTS + 1):
             btn = self._care_item('feed_10', source)

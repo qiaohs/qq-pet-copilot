@@ -1,7 +1,7 @@
 """新开课程的一次性喝奶操作；图像不确定时跳过，绝不重试投喂。"""
 from __future__ import annotations
 
-import time
+from src.runtime_control import clock as time
 import re
 from datetime import datetime
 

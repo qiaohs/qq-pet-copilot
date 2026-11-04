@@ -31,10 +31,11 @@ max_scan_count 每轮最多遍历好友数 / times_per_day 每天雇佣次数（
 import os
 import re
 import sys
-import time
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src.locators import see_bounds
 from src.ocr import ocr_texts

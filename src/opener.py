@@ -53,7 +53,7 @@ import shutil
 import struct
 import subprocess
 import sys
-import time
+from .runtime_control import clock as time
 import zlib
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse

@@ -48,7 +48,8 @@ class CustomChangesTest(TestCase):
 
     def test_employed_check_settles_activity_then_reenters_map(self):
         scen = EmployedScenario.__new__(EmployedScenario)
-        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='report'))
+        scen.dev = SimpleNamespace(hierarchy=Mock(return_value='report'), d=Mock())
+        scen.wait_attempts = lambda n: n
         scen._detect_settlement = Mock(side_effect=['school', None])
         scen.see = Mock(return_value=(90, 100, 1.0))
         scen.click = Mock()
@@ -59,7 +60,8 @@ class CustomChangesTest(TestCase):
         with patch('scenarios.employed.time.sleep'):
             self.assertTrue(scen._settle_finished_activity('report_image'))
         scen.settlement_completed.assert_called_once_with('school', 'report_image', 'report')
-        scen.click.assert_called_once_with(90, 100)
+        scen.dev.d.press.assert_called_once_with('back')
+        scen.click.assert_not_called()
         scen.leave_home.assert_called_once()
         self.assertTrue(all(call.kwargs['count_hire'] is False
                             for call in scen._detect_settlement.call_args_list))

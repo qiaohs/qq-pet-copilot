@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-import time
+from .runtime_control import clock as time
 from datetime import datetime, timedelta
 
 from .config import find_adb, load_config
@@ -79,6 +79,8 @@ class DeviceScenario:
         self.pending = None  # dict: in_name/end_name/until(datetime)/on_finish/desc/encourage
 
     def screen(self):
+        from .runtime_control import controller
+        controller.checkpoint()
         return self.dev.screenshot()
 
     @property
@@ -200,6 +202,8 @@ class DeviceScenario:
         - 返回图标（默认）：定位游戏内 back 按钮点击；找不到返回 False，
           由调用方决定重试/放弃（避免页面不在预期时误按系统返回退过头）。
         """
+        from .runtime_control import controller
+        controller.checkpoint()
         method = getattr(getattr(self.cfg, 'schedule', None), 'back_method', '系统返回')
         if method == '系统返回':
             self.dev.d.press('back')
@@ -462,12 +466,7 @@ class DeviceScenario:
             # 非阻塞调度的鼓励主要靠 defer_busy_end/_defer_busy 登记 pending 时
             # 在进行中页面就地点击）
             self._encourage_burst()
-        quit_hit = self.see('quit')
-        if quit_hit:
-            self.click(quit_hit[0], quit_hit[1])
-            time.sleep(CLICK_INTERVAL)
-        else:
-            log('未找到 quit 按钮，直接返回')
+        self.close_activity_settlement()
 
     def see_employed_sign(self, screen):
         """被雇佣召回标志：面板分成比例行"雇佣者 x% 被雇佣者 y%"，
@@ -757,15 +756,8 @@ class DeviceScenario:
                 if pend.get('encourage'):
                     # 结算页实测没有鼓励按钮（快速 3 轮不中即放弃），仅作兜底
                     self._encourage_burst()
-                quit_hit = self.see('quit', screen, source)
-                if quit_hit:
-                    self.click(quit_hit[0], quit_hit[1])
-                    time.sleep(CLICK_INTERVAL)
-                    # 点完 quit 已落在"出门"页面：打时间戳标记，同场景下一轮
-                    # 可以直接点活动入口，省一次 back + 出门（见 adventure.run）
-                    self._after_pending_go_out_at = time.monotonic()
-                else:
-                    log(f"{pend['desc']}: 未找到 quit 按钮，直接返回")
+                self.close_activity_settlement()
+                self._after_pending_go_out_at = time.monotonic()
                 self.pending = None
                 pend['on_finish']()
                 return True
@@ -819,6 +811,22 @@ class DeviceScenario:
                         'encourage': kind in ('school', 'work')}
         log(f'检测到正在{desc}，预计 {secs} 秒后结束（{until:%H:%M:%S} 收尾），先调度其他任务')
         return True
+
+    def close_activity_settlement(self) -> None:
+        """结算页用系统返回关闭，等待动画；不点击被手机导航栏遮挡的 quit。"""
+        from .runtime_control import controller
+        controller.checkpoint()
+        self.dev.d.press('back')
+        for attempt in range(1, self.wait_attempts(6) + 1):
+            time.sleep(1.0)
+            after, source = self.snapshot()
+            if not self._detect_settlement(after, source, count_hire=False):
+                return
+            if attempt == 3:
+                if not self.dismiss_system_update(after, source):
+                    log('结算页仍未关闭，再按一次手机返回键')
+                    self.dev.d.press('back')
+        raise RuntimeError('活动结算页多次返回仍未关闭')
 
     def _detect_settlement(self, screen, source, *, count_hire: bool = True) -> str | None:
         """出门后的结算页检测（上次活动已结束未收尾，如调度器重启丢失 pending 后，
@@ -911,19 +919,16 @@ class DeviceScenario:
             # 结算页（上次活动已结束未收尾）：点 quit 收尾并返回对应类型（计数同
             # 等完活动的语义；"打工总结"含雇佣好友名称时 _detect_settlement 已计雇佣）。
             # xpath 定位（分享/quit）source 传 None 按需 dump（结算页是低频路径）
-            settle = self._detect_settlement(screen, None)
+            settle = self._detect_settlement(screen, None, count_hire=False)
             if settle:
                 settle_names = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
-                log(f'出门后检测到{settle_names[settle]}结算页，点 quit 收尾')
+                log(f'出门后检测到{settle_names[settle]}结算页，用手机返回键收尾')
                 if settle in ('school', 'work'):
                     # 结算页实测没有鼓励按钮（快速 3 轮不中即放弃），仅作兜底
                     self._encourage_burst()
-                quit_hit = self.see('quit', screen)
-                if quit_hit:
-                    self.click(quit_hit[0], quit_hit[1])
-                    time.sleep(CLICK_INTERVAL)
-                else:
-                    log('结算页未找到 quit 按钮，直接返回')
+                self.close_activity_settlement()
+                if settle == 'work':
+                    self._detect_settlement(screen, None)  # 关闭成功后才交叉计入雇佣好友
                 return settle
             if self.see('school_in', screen):
                 if self.defer_wait and self._defer_busy('school', screen):

@@ -25,9 +25,10 @@
 
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src.locators import OCR_MIN_SCORE, locate_cached
 from src.ocr import find_text, ocr_fullscreen, parse_panel_location

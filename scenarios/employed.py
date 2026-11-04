@@ -14,7 +14,7 @@ employed.off_hours_recall 后，非时间段也会巡检，按 50/50 召回并�
 """
 from __future__ import annotations
 
-import time
+from src.runtime_control import clock as time
 from datetime import datetime, timedelta
 
 from src.notify import send_employment_time, send_unemployed_reminder
@@ -44,16 +44,7 @@ class EmployedScenario(DeviceScenario):
             raise RuntimeError('结算返回后仍停在结算页，等待下一轮重试')
         names = {'school': '学习', 'work': '打工', 'adventure': '冒险'}
         log(f'被雇佣检查遇到{names[kind]}结算页，先处理结算，再重新出门检查')
-        quit_hit = self.see('quit', screen, source)
-        if quit_hit:
-            self.click(quit_hit[0], quit_hit[1])
-        elif not self.go_back(source=source):
-            raise RuntimeError('活动结算页无法返回')
-        time.sleep(0.5)
-        # 必须确认离开才计数；不能误点“继续学习/继续冒险”启动新活动。
-        after, after_source = self.snapshot()
-        if self._detect_settlement(after, after_source, count_hire=False):
-            raise RuntimeError('活动结算页返回未生效')
+        self.close_activity_settlement()
         callback = getattr(self, 'settlement_completed', None)
         if callback:
             callback(kind, screen, source)

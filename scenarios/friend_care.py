@@ -19,10 +19,11 @@ max_scan_count 每轮最多遍历好友数 / interval_seconds 调度间隔（秒
 import os
 import re
 import sys
-import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src.progress import log
 from src.scenario import CLICK_INTERVAL, DeviceScenario

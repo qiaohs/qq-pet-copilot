@@ -24,9 +24,10 @@
 import os
 import re
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src.ocr import ocr_texts
 from src.progress import (
@@ -263,7 +264,7 @@ class SchoolScenario(DeviceScenario):
     def attend_class(self) -> bool:
         """选课 -> 开始学习 -> 等待下课 -> quit。返回 True 表示还能继续学。"""
         self.select_course()
-        self._class_started_at = time.monotonic()
+        self._class_started_at = time.real_monotonic()
         self._class_duration_detected = False
         self._detected_duration_minutes = None
         self._milk_attempted = False
@@ -292,7 +293,7 @@ class SchoolScenario(DeviceScenario):
     def _detect_duration_from_remaining(self) -> int | None:
         """开课后按剩余倒计时匹配配置中的学习时长候选。"""
         for attempt in range(1, 4):
-            elapsed = max(0.0, time.monotonic() - (self._class_started_at or time.monotonic()))
+            elapsed = max(0.0, time.real_monotonic() - (self._class_started_at or time.real_monotonic()))
             remaining = self.read_remaining_seconds(self.screen())
             minutes = infer_class_minutes(remaining, elapsed, self.duration_candidates)
             if minutes is not None:
@@ -312,7 +313,7 @@ class SchoolScenario(DeviceScenario):
         """倒计时 OCR 失败时，在本次课程结束后按实际经过时间兜底识别。"""
         if self._class_duration_detected or self._class_started_at is None:
             return self._detected_duration_minutes if self._class_duration_detected else None
-        elapsed = max(0.0, time.monotonic() - self._class_started_at)
+        elapsed = max(0.0, time.real_monotonic() - self._class_started_at)
         minutes = infer_class_minutes(0, elapsed, self.duration_candidates)
         if minutes is not None:
             self._save_detected_duration(minutes, '开课至结算耗时')

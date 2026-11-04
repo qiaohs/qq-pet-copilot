@@ -14,6 +14,7 @@
 """
 
 import os
+import json
 import queue
 import re
 import subprocess
@@ -60,6 +61,7 @@ from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QDialog,
     QFormLayout,
     QGraphicsOpacityEffect,
     QGridLayout,
@@ -106,6 +108,8 @@ import win32gui
 import win32process
 
 from src import settings as settings_io
+from src.runtime_control import CONTROL_PREFIX
+from src import schedule_profiles
 from src.adb.device import Device
 from src.emulator import EMULATOR_TYPES
 from src.config import (
@@ -861,6 +865,49 @@ class TwoColumnCardsPanel(QWidget):
         self._heights[idx] += card.sizeHint().height() + 12
 
 
+class ScheduleDiffDialog(QDialog):
+    """只列真实差异，避免切换调度方案时静默覆盖手改值。"""
+    def __init__(self, title, changes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(820, min(580, 160 + len(changes) * 36))
+        layout = QVBoxLayout(self)
+        table = TableWidget(self)
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(['项目', '当前值', '变更后'])
+        table.setRowCount(len(changes))
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().hide()
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        labels = {key: label for key, label, _ in SETTING_FIELDS + TASK_SETTING_FIELDS}
+        fields = {'enabled': '开关', 'trigger': '触发方式', 'interval_seconds': '执行间隔（秒）',
+                  'daily_times': '每日时间', 'enabled_time_range': '启用时段',
+                  'success_interval': '成功间隔（秒）', 'failure_interval': '失败间隔（秒）'}
+        def display(value):
+            if isinstance(value, bool):
+                return '开启' if value else '关闭'
+            return str(value)
+        for row, (key, old, new) in enumerate(changes):
+            parts = key.split('.')
+            label = labels.get(key, key)
+            if parts[0] == 'tasks' and len(parts) == 3:
+                label = SCHEDULE_TASK_NAMES.get(parts[1], parts[1]) + ' · ' + fields.get(parts[2], parts[2])
+            for column, value in enumerate((label, display(old), display(new))):
+                cell = QTableWidgetItem(value)
+                cell.setToolTip(value)
+                table.setItem(row, column, cell)
+        layout.addWidget(table, 1)
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = PushButton('取消', self)
+        cancel.clicked.connect(self.reject)
+        accept = PrimaryPushButton('确认', self)
+        accept.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(accept)
+        layout.addLayout(row)
+
+
 class MainWindow(MSFluentWindow):
     # 检查更新结果回投 GUI 线程：(manual, UpdateCheckResult)
     _sig_update_result = pyqtSignal(object)
@@ -905,6 +952,9 @@ class MainWindow(MSFluentWindow):
         self._scrcpy_proc: subprocess.Popen | None = None
         self._runner_proc: subprocess.Popen | None = None
         self._runner_started_at: float | None = None  # 调度器启动时刻（monotonic），主页显示运行时间用
+        self._pause_state = 'running'
+        self._pause_until = 0.0
+        self._control_events = queue.Queue()
         self._recovering = False  # 手动重启进行中：期间开始/停止按钮联动禁用
 
         # 日志：本进程监听器 + 调度子进程 stdout -> 队列 -> 定时器刷到界面
@@ -965,6 +1015,11 @@ class MainWindow(MSFluentWindow):
         """顶部工具栏上的按钮/开关（处理器与各状态字段与原布局一致）。"""
         # 开始 = 子进程启动调度器，停止 = 立即结束调度器进程
         self.btn_start = PrimaryPushButton('开始', self, FIF.PLAY)
+        self.btn_pause = PushButton('暂停', self, FIF.PAUSE)
+        self.btn_pause.setMinimumWidth(116)
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setToolTip('暂停当前任务的后续操作，5 分钟后自动恢复；手机活动倒计时仍继续')
+        self.btn_pause.clicked.connect(self.toggle_runner_pause)
         self.btn_stop = PushButton('停止', self, FIF.CLOSE)
         self.btn_stop.setEnabled(False)
         self.btn_start.clicked.connect(self.start_runner)
@@ -991,6 +1046,7 @@ class MainWindow(MSFluentWindow):
         row.setContentsMargins(14, 8, 14, 8)
         row.setSpacing(10)
         row.addWidget(self.btn_start)
+        row.addWidget(self.btn_pause)
         row.addWidget(self.btn_stop)
         row.addSpacing(6)
         row.addWidget(BodyLabel('画面镜像'))
@@ -1641,6 +1697,26 @@ class MainWindow(MSFluentWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 12)
         layout.setSpacing(8)
+        profiles = QHBoxLayout()
+        profiles.addWidget(BodyLabel('调度方案'))
+        self._profile_name = _NoInsertEditableComboBox()
+        self._profile_name.setPlaceholderText('选择方案或填写新名称')
+        self._profile_name.setMinimumWidth(220)
+        self._profile_name.setMaximumWidth(320)
+        profiles.addWidget(self._profile_name)
+        for text, handler in (('保存当前安排', self._save_schedule_profile),
+                              ('应用', self._apply_schedule_profile),
+                              ('删除', self._delete_schedule_profile)):
+            button = PushButton(text)
+            button.clicked.connect(handler)
+            profiles.addWidget(button)
+        profiles.addStretch(1)
+        layout.addLayout(profiles)
+        self._profile_status = CaptionLabel('方案仅包含调度、次数与时长；当前任务在切换后继续，下一轮采用新安排。')
+        self._profile_status.setWordWrap(True)
+        layout.addWidget(self._profile_status)
+        self._reload_profile_names()
+        self._profile_name.currentTextChanged.connect(self._describe_schedule_profile)
         self.schedule_table = TableWidget()
         self.schedule_table.setRowCount(0)
         self.schedule_table.setColumnCount(5)
@@ -1662,6 +1738,108 @@ class MainWindow(MSFluentWindow):
         self._schedule_rows: list = []
         self._schedule_order: list = []
         return page
+
+    def _reload_profile_names(self, selected=None):
+        try:
+            store = schedule_profiles.load_store()
+            self._profile_name.clear()
+            self._profile_name.addItems(list(store['profiles']))
+            self._profile_name.setCurrentText(selected or store.get('active', ''))
+        except Exception as e:
+            self._profile_feedback(f'读取调度方案失败: {e}')
+
+    def _profile_feedback(self, text):
+        self._profile_status.setText(text)
+        log(text)
+
+    def _describe_schedule_profile(self, name):
+        try:
+            values = schedule_profiles.load_store()['profiles'].get(name.strip())
+            if values is None:
+                text = '填写名称后保存当前安排；应用已存方案前会显示差异。'
+            else:
+                changes = schedule_profiles.differences(schedule_profiles.capture(), values)
+                text = (f'“{name}”与当前安排一致' if not changes else
+                        f'“{name}”与当前安排有 {len(changes)} 项差异，点击应用可预览。')
+            self._profile_status.setText(text)
+        except Exception as e:
+            self._profile_status.setText(f'无法读取方案: {e}')
+
+    def _save_schedule_profile(self):
+        name = self._profile_name.currentText().strip()
+        if not name or len(name) > 80 or name == schedule_profiles.BACKUP_NAME:
+            self._profile_feedback('请填写 1–80 字的方案名称（自动备份名称保留）')
+            return
+        try:
+            store = schedule_profiles.load_store()
+            values = schedule_profiles.capture()
+            if name in store['profiles']:
+                changes = schedule_profiles.differences(store['profiles'][name], values)
+                if not changes:
+                    self._profile_feedback(f'“{name}”已与当前安排一致')
+                    return
+                if not ScheduleDiffDialog(f'更新方案：{name}', changes, self).exec():
+                    return
+            store['profiles'][name] = values
+            schedule_profiles.save_store(store)
+            self._reload_profile_names(name)
+            self._profile_feedback(f'已保存调度方案“{name}”')
+        except Exception as e:
+            self._profile_feedback(f'保存方案失败: {e}')
+
+    def _apply_schedule_profile(self):
+        name = self._profile_name.currentText().strip()
+        try:
+            store = schedule_profiles.load_store()
+            target = store['profiles'].get(name)
+            if target is None:
+                self._profile_feedback('请先选择一个已保存的方案')
+                return
+            current = schedule_profiles.capture()
+            changes = schedule_profiles.differences(current, target)
+            if not changes:
+                self._profile_feedback(f'当前已是“{name}”的安排')
+                return
+            if not ScheduleDiffDialog(f'应用调度方案：{name}', changes, self).exec():
+                return
+            # 保存切换前的有效调度值，方便下拉选择恢复；不包含凭据与名单。
+            store['profiles'][schedule_profiles.BACKUP_NAME] = current
+            schedule_profiles.save_store(store)
+            schedule_profiles.apply(target, current)
+            if name == schedule_profiles.BACKUP_NAME:
+                store.pop('active', None)
+            else:
+                store['active'] = name
+            schedule_profiles.save_store(store)
+            self._reload_profile_names(name)
+            self._schedule_sig = None
+            self.load_settings()
+            self._refresh_schedule()
+            self._profile_feedback(
+                '已恢复切换前安排；当前任务继续，下一轮生效。刚才的安排已成为新的自动备份。'
+                if name == schedule_profiles.BACKUP_NAME else
+                f'已应用“{name}”；当前任务继续，下一轮生效。原安排已存为自动备份。')
+        except Exception as e:
+            self._profile_feedback(f'应用方案失败: {e}')
+
+    def _delete_schedule_profile(self):
+        name = self._profile_name.currentText().strip()
+        try:
+            store = schedule_profiles.load_store()
+            if name not in store['profiles']:
+                self._profile_feedback('请选择要删除的已保存方案')
+                return
+            box = MessageBox('删除调度方案', f'删除“{name}”？当前配置和任务进度会保留。', self)
+            if not box.exec():
+                return
+            del store['profiles'][name]
+            if store.get('active') == name:
+                store.pop('active', None)
+            schedule_profiles.save_store(store)
+            self._reload_profile_names()
+            self._profile_feedback(f'已删除方案“{name}”，当前安排保留')
+        except Exception as e:
+            self._profile_feedback(f'删除方案失败: {e}')
 
     @staticmethod
     def _clock_to_time(value):
@@ -2448,6 +2626,7 @@ class MainWindow(MSFluentWindow):
         self._recovering = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
+        self.btn_pause.setEnabled(False)
         if self._runner_proc and self._runner_proc.poll() is None:
             log('手动重启：先停止调度器')
             self.stop_runner()
@@ -2778,6 +2957,7 @@ class MainWindow(MSFluentWindow):
             cmd,
             cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding='utf-8',
@@ -2789,17 +2969,40 @@ class MainWindow(MSFluentWindow):
             target=self._read_runner_logs, args=(self._runner_proc,), daemon=True
         ).start()
         self._runner_started_at = time.monotonic()
+        self._pause_state = 'running'
+
+    def toggle_runner_pause(self) -> None:
+        proc = self._runner_proc
+        if not proc or proc.poll() is not None or not proc.stdin:
+            return
+        pause = self._pause_state == 'running'
+        try:
+            proc.stdin.write('pause\n' if pause else 'resume\n')
+            proc.stdin.flush()
+        except (OSError, ValueError) as e:
+            log(f'暂停控制失败: {e}')
+            return
+        self._pause_state = 'pausing' if pause else 'resuming'
+        self.btn_pause.setText('暂停中…' if pause else '恢复中…')
+        self.btn_pause.setEnabled(False)
 
     def stop_runner(self) -> None:
         if self._runner_proc and self._runner_proc.poll() is None:
             log('结束调度器进程')
             self._runner_proc.terminate()
         self._runner_started_at = None
+        self._pause_state = 'running'
 
     def _read_runner_logs(self, proc: subprocess.Popen) -> None:
         """把调度器子进程的输出逐行送入日志队列。"""
         for line in proc.stdout:
-            self._log_queue.put(line.rstrip())
+            if line.startswith(CONTROL_PREFIX):
+                try:
+                    self._control_events.put((proc, json.loads(line[len(CONTROL_PREFIX):])))
+                except (ValueError, TypeError):
+                    pass
+            else:
+                self._log_queue.put(line.rstrip())
         log('调度器已结束')
 
     # ---- 日志刷新 ----
@@ -2829,6 +3032,17 @@ class MainWindow(MSFluentWindow):
             log(f'打开今日日志文件失败: {e}')
 
     def _drain_logs(self) -> None:
+        while not self._control_events.empty():
+            proc, state = self._control_events.get_nowait()
+            if proc is not self._runner_proc:
+                continue
+            self._pause_state = state.get('state', 'running')
+            if self._pause_state == 'paused':
+                self._pause_until = time.monotonic() + state.get('remaining', 300)
+                log('任务已暂停，保留当前进度；5 分钟后自动恢复')
+            else:
+                log('暂停已满 5 分钟，自动继续当前任务' if state.get('automatic')
+                    else '已恢复，继续当前任务')
         bar = self.log_view.verticalScrollBar()
         # 只有用户本来就在底部时才跟随新日志；向上翻看时保持当前位置
         was_at_bottom = bar.value() >= bar.maximum() - 2
@@ -2847,6 +3061,16 @@ class MainWindow(MSFluentWindow):
         running = bool(self._runner_proc and self._runner_proc.poll() is None)
         if not running:
             self._runner_started_at = None
+            self._pause_state = 'running'
+        if self._pause_state == 'paused':
+            remaining = max(0, int(self._pause_until - time.monotonic()))
+            self.btn_pause.setText(f'恢复 {remaining // 60}:{remaining % 60:02d}')
+            self.btn_pause.setIcon(FIF.PLAY)
+        elif self._pause_state == 'running':
+            self.btn_pause.setText('暂停')
+            self.btn_pause.setIcon(FIF.PAUSE)
+        self.btn_pause.setEnabled(running and not self._recovering
+                                  and self._pause_state in ('running', 'paused'))
         if self._recovering:
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(False)

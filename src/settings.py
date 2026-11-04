@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
+from pathlib import Path
+import tempfile
 
 import yaml
 from ruamel.yaml import YAML
@@ -267,9 +270,16 @@ def load_raw():
 
 
 def save_raw(data) -> None:
-    """写回 config.yaml（保留原有注释和格式）。"""
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        _yaml.dump(data, f)
+    """保留注释和格式，整份写好后原子替换，防止调度器热加载到半份方案。"""
+    target = Path(CONFIG_FILE)
+    fd, temp = tempfile.mkstemp(prefix=target.name, suffix='.tmp', dir=target.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            _yaml.dump(data, f)
+        os.replace(temp, target)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
 
 def get_value(data, dotted_key: str, default=None):

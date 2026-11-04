@@ -28,12 +28,13 @@
 
 import os
 import sys
-import time
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.runtime_control import clock as time
 
 from src import opener
 from src.locators import LOCATORS, see_bounds

@@ -20,7 +20,7 @@ import random
 import socket
 import subprocess
 import sys
-import time
+from .runtime_control import clock as time, controller
 from pathlib import Path
 
 import numpy as np
@@ -141,6 +141,7 @@ def _u2_retry(fn):
 
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
+        controller.checkpoint()
         try:
             return fn(self, *args, **kwargs)
         except Exception as e:
@@ -172,6 +173,25 @@ class U2Device:
         self.control_method = getattr(load_config().control, 'method', 'injectInputEvent')
         self._mt = None  # minitouch 会话懒加载（首次 minitouch 点击时建立）
         self._last_reconnect_at = 0.0  # 上次 u2 重连时间（monotonic），配合 RECONNECT_COOLDOWN
+        self._held_touch = None
+        controller.before_pause = self._pause_touch
+        controller.after_resume = self._resume_touch
+
+    def _pause_touch(self):
+        point = self._held_touch
+        if point:
+            if self.control_method == 'minitouch' and self._mt:
+                self._mt.up()
+            else:
+                self.d.touch.up(*point)
+
+    def _resume_touch(self):
+        point = self._held_touch
+        if point:
+            if self.control_method == 'minitouch' and self._mt:
+                self._mt.down(*point)
+            else:
+                self.d.touch.down(*point)
 
     # ---- 感知 ----
 
@@ -276,6 +296,7 @@ class U2Device:
 
     def _u2_op(self, fn, *args, **kwargs):
         """执行依赖 u2 server 的调用；连接类异常时重连一次并重试一次。"""
+        controller.checkpoint()
         try:
             return fn(*args, **kwargs)
         except Exception as e:
@@ -398,7 +419,7 @@ class U2Device:
             except MinitouchUnavailableError as e:
                 self._fallback_control_method(e)
         self.d.touch.down(x, y)
-        time.sleep(CLICK_PRESS_SECONDS)
+        time.real_sleep(CLICK_PRESS_SECONDS)
         self.d.touch.up(x, y)
 
     @_u2_retry
@@ -416,6 +437,7 @@ class U2Device:
 
     @_u2_retry
     def touch_down(self, x: int, y: int) -> None:
+        self._held_touch = (x, y)
         if self.control_method == 'minitouch':
             try:
                 self._minitouch().down(x, y)
@@ -426,6 +448,7 @@ class U2Device:
 
     @_u2_retry
     def touch_move(self, x: int, y: int) -> None:
+        self._held_touch = (x, y)
         if self.control_method == 'minitouch':
             try:
                 self._minitouch().move(x, y)
@@ -436,6 +459,7 @@ class U2Device:
 
     @_u2_retry
     def touch_up(self, x: int, y: int) -> None:
+        self._held_touch = None
         if self.control_method == 'minitouch':
             try:
                 self._minitouch().up()
@@ -638,7 +662,7 @@ class MiniTouchSession:
         sx, sy = self._scale(x, y)
         self._send(f'd 0 {sx} {sy} 50')
         self._send('c')
-        time.sleep(CLICK_PRESS_SECONDS)
+        time.real_sleep(CLICK_PRESS_SECONDS)
         self._send('u 0')
         self._send('c')
 

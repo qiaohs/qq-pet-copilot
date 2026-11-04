@@ -34,7 +34,7 @@ import os
 import re
 import subprocess
 import sys
-import time
+from .runtime_control import clock as time
 import winreg
 from dataclasses import dataclass, field
 from pathlib import Path
