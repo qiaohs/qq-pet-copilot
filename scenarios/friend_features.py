@@ -9,6 +9,7 @@ from __future__ import annotations
 from src.runtime_control import clock as time
 import base64
 import json
+import re
 import zlib
 from functools import lru_cache
 
@@ -104,6 +105,17 @@ def is_non_friend_page(screen: np.ndarray) -> bool:
     except Exception as exc:
         log(f'非好友识别失败，继续使用最大遍历数兜底: {exc}')
         return False
+
+
+def has_friend_badge(screen: np.ndarray) -> bool:
+    """只认顶部好友互动徽章（如 31天、点亮中1/3），不把 OCR 漏字当好友。"""
+    height, width = screen.shape[:2]
+    badge = screen[round(0.025 * height):round(0.114 * height),
+                   round(0.62 * width):round(0.84 * width)]
+    texts = [''.join(text.split()).replace('／', '/')
+             for text, _, _, confidence in ocr_texts(badge) if confidence >= 0.5]
+    return (not any('加好友' in text for text in texts)
+            and any(re.fullmatch(r'(?:\d+天|点亮中\d+/\d+)', text) for text in texts))
 
 
 def claim_lucky_bag(scenario, owner: str, screen: np.ndarray | None = None) -> str:

@@ -7,6 +7,7 @@
    （frida 兜底）时改为 root am start 直开好友页，见 goto_first_friend）
 3. 点击 踩踩（visit_step），当天次数 +1 并持久化到 runs/visit_progress.json
    （访问进入时默认就是好友列表的第一个好友）；
+   本次踩后出现“已踩”且顶部有好友徽章时，在画面中央的宠物区域连画两圈；
    若出现已踩标志（visit_stepped，"已踩"——今天已踩过该好友），
    跳过不计数，直接切换下一个好友
 4. 切换下一个好友：重新抓取好友列表（content-desc 以 "好友 " 开头的项，
@@ -26,7 +27,9 @@
       python scenarios/visit.py --times 5 （覆盖本次连续目标，0 为不限）
 """
 
+import math
 import os
+import random
 import sys
 
 import cv2
@@ -51,6 +54,7 @@ from src.progress import (
 )
 from src.scenario import CLICK_INTERVAL, NAV_TIMEOUT, DeviceScenario
 from scenarios.care import ONE_CLICK_PAY_RETRIES
+from scenarios.friend_features import has_friend_badge
 
 FRIEND_ITEM_XPATH = LOCATORS['visit_friend_item']['xpath'][0]
 STEP_RETRIES = 5  # 切换好友后踩踩按钮有几秒加载延迟，重试次数
@@ -58,6 +62,8 @@ FRIEND_LIST_RETRIES = 5  # 好友页左侧列表可能晚于踩踩按钮出现
 FRIEND_SWITCH_CLICK_RETRIES = 2  # 好友轮播点击偶尔未生效，验证失败后重点一次
 FRIEND_SWITCH_POLL_RETRIES = 2  # 每次点击后等待轮播位置/名单实际变化
 FRIEND_REWIND_LIMIT = 12  # 进入好友页后最多向左回溯次数，防止游戏保留了上次选中位置
+PET_CIRCLE_REF_SIZE = (720, 1440)  # 用户截图坐标，不追踪每只宠物的头部
+PET_CIRCLE_STEPS = 24  # 连续按住，每圈 12 段
 
 PROGRESS_FILE = VISIT_PROGRESS_FILE
 
@@ -146,6 +152,46 @@ class VisitScenario(DeviceScenario):
             log(f'未找到踩踩按钮，等待重试 ({attempt}/{attempts})')
             time.sleep(CLICK_INTERVAL)
         raise RuntimeError('好友页未找到踩踩按钮')
+
+    def _draw_friend_pet_circles(self) -> None:
+        """本次踩后确认是好友才画圈；动作失败也不重踩、不打断遍历。"""
+        try:
+            if not self.see('visit_stepped'):
+                return
+            screen = self.screen()
+            if not has_friend_badge(screen):
+                return
+            height, width = screen.shape[:2]
+            sx, sy = width / PET_CIRCLE_REF_SIZE[0], height / PET_CIRCLE_REF_SIZE[1]
+            cx, cy = random.uniform(358, 382), random.uniform(707, 731)
+            rx, ry = random.uniform(60, 76), random.uniform(45, 57)
+            start = random.uniform(0, math.tau)
+            wobble_phase = random.uniform(0, math.tau)
+            direction = random.choice((-1, 1))
+
+            def point(step: int) -> tuple[int, int]:
+                angle = start + direction * 2 * math.tau * step / PET_CIRCLE_STEPS
+                # 椭圆加轻微径向变化；相邻两圈略有不同，最后回到起点。
+                wobble = 1 + 0.07 * math.sin(1.5 * angle + wobble_phase)
+                return (round((cx + rx * wobble * math.cos(angle)) * sx),
+                        round((cy + ry * wobble * math.sin(angle)) * sy))
+
+            weights = [random.uniform(0.65, 1.35) for _ in range(PET_CIRCLE_STEPS)]
+            seconds_per_weight = random.uniform(0.85, 1.15) / sum(weights)
+            last = point(0)
+            try:
+                self.dev.touch_down(*last)
+                deadline = time.monotonic()
+                for step, weight in enumerate(weights, start=1):
+                    deadline += weight * seconds_per_weight
+                    time.sleep(max(0, deadline - time.monotonic()))
+                    last = point(step)
+                    self.dev.touch_move(*last)
+            finally:
+                self.dev.touch_up(*last)
+            log('已给好友宠物画两圈')
+        except Exception as exc:
+            log(f'好友宠物画圈未完成，继续踩踩: {exc}')
 
     def _friend_items(self) -> list[tuple[str, int, int]]:
         """当前可见的好友列表项：[(content-desc, 中心x, 中心y)]，按从上到下排序。"""
@@ -405,6 +451,7 @@ class VisitScenario(DeviceScenario):
                     done += 1
                     save_progress(PROGRESS_FILE, today, done, history)
                     log(f'已踩踩 {done} 次' + (f' / 目标 {max_times} 次' if max_times else ''))
+                    self._draw_friend_pet_circles()
             # 切换好友前：经验日常未完成则先处理照顾
             if not exp_done:
                 exp_done = self._try_exp_daily(exp_today, exp_history)
