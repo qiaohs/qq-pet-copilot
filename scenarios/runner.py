@@ -714,6 +714,7 @@ class Runner:
         else:
             log(f'属性点配置无效 {cfg.school.attribute!r}，沿用 {self.school.attribute}')
         self.work.location = cfg.work.location
+        self.work.cfg.work = cfg.work
         # work.duration 热加载：work.py 选工作选择框用 self.duration 副本，
         # hire_friend.py 用 cfg.work.duration，两个都要更新；非法值回退旧值
         if cfg.work.duration in DURATION_BOXES:

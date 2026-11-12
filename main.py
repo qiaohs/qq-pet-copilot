@@ -343,6 +343,7 @@ TASK_SETTING_FIELDS = [
     ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
     ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
     ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
+    ('work.auto_americano', '开工时自动喝元气美式（仅尝试一次）', 'bool'),
     ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
     ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
     ('adventure.start_time', '冒险调度时间', 'str'),

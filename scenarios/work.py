@@ -43,6 +43,7 @@ from src.progress import (
     set_current_work_duration,
 )
 from src.scenario import CLICK_INTERVAL, DeviceScenario, NAV_TIMEOUT
+from scenarios.work_coffee import drink_americano_once
 
 # 以下坐标均为 720x1280 参考坐标，运行时按当前分辨率自动换算
 PROGRESS_FILE = WORK_PROGRESS_FILE
@@ -329,9 +330,13 @@ class WorkScenario(DeviceScenario):
             results = ocr_fullscreen(self.screen())
             if find_text(results, '正在打工'):
                 log('开始工作: 已出现 work_in')
+                if clicked:
+                    drink_americano_once(self)
                 return
             target = find_text(results, '去打工')
             if target:
+                if not clicked:
+                    self._coffee_attempted = False
                 log(f'开始工作: 点击"去打工" ({target[0]}, {target[1]})')
                 self.click(target[0], target[1])
                 clicked = True
@@ -339,6 +344,7 @@ class WorkScenario(DeviceScenario):
                 continue
             if clicked:
                 log('开始工作: work_start 已消失，进入下一阶段')
+                drink_americano_once(self)
                 return
             if attempt == 1 or attempt == 3:
                 log(f'开始工作: 未找到 work_start，等待重试 ({attempt}/3)')

@@ -118,6 +118,15 @@ def send_school_milk_issue(reason: str, image_path: str | None = None) -> bool:
                               message, image_path)
 
 
+def send_work_coffee_issue(reason: str, image_path: str | None = None) -> bool:
+    """可选打工道具异常，使用现有桌面及 OnePush/Bark 通知渠道。"""
+    message = f'{reason}。本次打工不再尝试喝元气美式，打工继续。'
+    if image_path:
+        message += f' 截图已保存：{image_path}'
+    return _send_notification(_load_notify_config(), '[QQ宠物助手] 元气美式未确认使用',
+                              message, image_path)
+
+
 def _send_notification(cfg: NotifyConfig, title: str, reason: str,
                        image_path: str | None = None,
                        event_key: str | None = None,

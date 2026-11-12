@@ -174,6 +174,7 @@ class FriendHireScenario(FriendCareScenario):
         if not panel_ready:
             self._enter_work_panel()
         work = WorkScenario(self.dev)
+        work.cfg.work = self.cfg.work
         # 打工地点处理跟打工流程完全一致（select_place）：当前面板已是配置地点就直接用；
         # 不是则走重选分支——back 重置 -> OCR 找配置地点 -> 点击进入，仍不行回主页面
         # 重新进小镇再选（此时 hire 已生效/CD 已起，重选的是自己干活的打工面板）

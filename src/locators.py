@@ -154,6 +154,9 @@ LOCATORS: dict[str, dict] = {
     'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]']},
 
     # ---- 打工 ----
+    'work_coffee_add_hint': {'ocr': ['使用道具'], 'ocr_region': (0.5, 0.95)},
+    'work_coffee_title': {'ocr': ['道具'], 'ocr_region': (0.5, 0.95)},
+    'work_coffee_panel': {'ocr': ['元气美式'], 'ocr_region': (0.5, 0.95)},
     'town': {
         'xpath': ['//*[@content-desc="work"]',
                   '//*[@content-desc="map_blank"]/android.widget.FrameLayout[4]/android.widget.FrameLayout[1]']

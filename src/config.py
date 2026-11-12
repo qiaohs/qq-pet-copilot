@@ -109,6 +109,8 @@ class WorkConfig:
     duration: str = "45分钟"
     # 每天打工次数上限，0 为不限
     times_per_day: int = 0
+    # 普通/雇佣好友打工共用，仅在刚开工时尝试一次元气美式
+    auto_americano: bool = False
     # 已不再使用：旧流程"下滑找雇佣按钮"已移除（当前页没有雇佣按钮时直接关闭面板开工），
     # 保留字段仅为兼容已有 config.yaml
     employ_scroll_limit: int = 5

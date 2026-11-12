@@ -38,6 +38,7 @@ DEFAULTS = {
     'school.auto_calcium_milk': False,
     'work.location': '风铃旅社',
     'work.times_per_day': 0,
+    'work.auto_americano': False,
     'work.employ_scroll_limit': 5,
     'schedule.coin_threshold': 2000,
     'schedule.daily_hour_limit': 8,
@@ -150,7 +151,7 @@ def validate_field(key: str, value):
             return False, DoubleQuotedScalarString(str(default))
     if key in ('friend_care.friend_name', 'hire_friend.friend_name', 'pk.friend_name'):
         return True, str(value).strip()
-    if key in ('school.auto_calcium_milk', 'friend_care.enabled',
+    if key in ('school.auto_calcium_milk', 'work.auto_americano', 'friend_care.enabled',
                'friend_care.post_one_click_care',
                'hire_friend.enabled', 'employed.enabled',
                'employed.off_hours_recall', 'employed.unemployed_reminder',
