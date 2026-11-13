@@ -155,6 +155,7 @@ LOCATORS: dict[str, dict] = {
 
     # ---- 打工 ----
     'work_coffee_add_hint': {'ocr': ['使用道具'], 'ocr_region': (0.5, 0.95)},
+    'work_coffee_add': {'ocr': ['+', '＋', '十'], 'ocr_region': (0.5, 0.95)},
     'work_coffee_title': {'ocr': ['道具'], 'ocr_region': (0.5, 0.95)},
     'work_coffee_panel': {'ocr': ['元气美式'], 'ocr_region': (0.5, 0.95)},
     'town': {

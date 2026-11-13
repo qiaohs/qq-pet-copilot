@@ -77,19 +77,40 @@ def drink_americano_once(scen) -> None:
     scen._coffee_attempted = True
     panel_open = False
     try:
-        screen = scen.screen()
-        working = scen.see('work_in', screen)
-        if not working:
-            raise RuntimeError('开工后未确认正在打工，跳过饮料')
-        if find_americano(screen, anchor_y=working[1], used=True):
-            log('本次打工道具栏已显示元气美式，结束喝饮料流程')
-            return
-        hint = scen.see('work_coffee_add_hint', screen)
-        height, width = screen.shape[:2]
-        plus_y = working[1] + round(height * 170 / 1440)
-        if not hint or hint[0] < width * 0.5 or abs(hint[1] - plus_y) > height * 0.07:
-            raise RuntimeError('未确认打工道具入口')
-        scen.click(round(width * 316 / 720), plus_y)
+        previous = None
+        # 刚开工时底部面板会向上滑动，OCR 耗时内按钮可能已经离开原坐标。
+        # 这里只等待页面稳定，加号仍然只点一次。
+        for attempt in range(1, 5):
+            screen = scen.screen()
+            height, width = screen.shape[:2]
+            working = scen.see('work_in', screen)
+            hint = scen.see('work_coffee_add_hint', screen)
+            if working and find_americano(screen, anchor_y=working[1], used=True):
+                log('本次打工道具栏已显示元气美式，结束喝饮料流程')
+                return
+            plus_y = working[1] + round(height * 170 / 1440) if working else 0
+            if (working and hint and hint[0] >= width * 0.5
+                    and abs(hint[1] - plus_y) <= height * 0.07
+                    and plus_y < height * 0.94):
+                plus_x = round(width * 316 / 720)
+                plus = scen.see('work_coffee_add', screen)
+                if (plus and abs(plus[0] - plus_x) <= width * 0.08
+                        and abs(plus[1] - plus_y) <= height * 0.04):
+                    plus_x, plus_y = plus[:2]
+                position = (working[1], hint[1], plus_y)
+                if previous is not None and max(
+                        abs(current - old) for current, old in zip(position, previous)) <= height * 0.005:
+                    log(f'打工道具入口已稳定: 标题 y={working[1]}，加号 ({plus_x}, {plus_y})')
+                    break
+                previous = position
+            else:
+                previous = None
+            if attempt < 4:
+                log(f'等待打工道具入口位置稳定 ({attempt}/4)')
+                time.sleep(0.25)
+        else:
+            raise RuntimeError('打工道具入口未出现或位置仍在变化，跳过饮料')
+        scen.click(plus_x, plus_y)
         time.sleep(CLICK_INTERVAL)
         screen = scen.screen()
         title = scen.see('work_coffee_title', screen)

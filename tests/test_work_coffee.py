@@ -25,7 +25,7 @@ class WorkCoffeeTests(TestCase):
 
     def test_success_counter_closes_menu_and_only_drinks_once(self):
         scen = self.make_scenario()
-        with patch('scenarios.work_coffee.find_americano', side_effect=[None, (362, 1120)]), \
+        with patch('scenarios.work_coffee.find_americano', side_effect=[None, None, (362, 1120)]), \
              patch('scenarios.work_coffee.read_drink_usage', side_effect=[None, (1, 1)]), \
              patch('scenarios.work_coffee.ocr_texts', return_value=[('45', 40, 20, 1)]), \
              patch('scenarios.work_coffee._report') as report, \
@@ -47,6 +47,59 @@ class WorkCoffeeTests(TestCase):
                          [(316, 1169), (658, 923)])
         report.assert_not_called()
 
+    def test_waits_for_sliding_panel_and_clicks_current_plus(self):
+        for recognize_plus in (False, True):
+            with self.subTest(recognize_plus=recognize_plus):
+                scen = self.make_scenario()
+                working = iter([(178, 1122, 1), (176, 919, 1), (176, 919, 1)])
+                hints = iter([(517, 1277, 1), (517, 1074, 1), (517, 1074, 1)])
+                pluses = iter([(314, 1293, 1), (314, 1090, 1), (314, 1090, 1)])
+                original_see = scen.see.side_effect
+
+                def see(name, screen):
+                    if name == 'work_in':
+                        return next(working)
+                    if name == 'work_coffee_add_hint':
+                        return next(hints)
+                    if name == 'work_coffee_add' and recognize_plus:
+                        return next(pluses)
+                    return original_see(name, screen)
+
+                scen.see.side_effect = see
+                with patch('scenarios.work_coffee.find_americano',
+                           side_effect=[None, None, None, (362, 1120)]), \
+                     patch('scenarios.work_coffee.read_drink_usage', side_effect=[None, (1, 1)]), \
+                     patch('scenarios.work_coffee.ocr_texts', return_value=[]), \
+                     patch('scenarios.work_coffee._report') as report, \
+                     patch('scenarios.work_coffee.time.sleep'):
+                    drink_americano_once(scen)
+                expected = (314, 1090) if recognize_plus else (316, 1089)
+                self.assertEqual(scen.click.call_args_list[0].args, expected)
+                self.assertEqual(scen.click.call_count, 3)
+                report.assert_not_called()
+
+    def test_unsettled_panel_does_not_click_or_repeat(self):
+        scen = self.make_scenario()
+        working = iter([(178, y, 1) for y in (1122, 1082, 1042, 1002)])
+        hints = iter([(517, y + 155, 1) for y in (1122, 1082, 1042, 1002)])
+        original_see = scen.see.side_effect
+
+        def see(name, screen):
+            if name == 'work_in':
+                return next(working)
+            if name == 'work_coffee_add_hint':
+                return next(hints)
+            return original_see(name, screen)
+
+        scen.see.side_effect = see
+        with patch('scenarios.work_coffee.find_americano', return_value=None), \
+             patch('scenarios.work_coffee._report') as report, \
+             patch('scenarios.work_coffee.time.sleep'):
+            drink_americano_once(scen)
+            drink_americano_once(scen)
+        scen.click.assert_not_called()
+        report.assert_called_once()
+
     def test_disabled_does_not_open_menu(self):
         scen = self.make_scenario(False)
         drink_americano_once(scen)
@@ -55,7 +108,7 @@ class WorkCoffeeTests(TestCase):
 
     def test_consumption_failure_never_retries(self):
         scen = self.make_scenario()
-        with patch('scenarios.work_coffee.find_americano', side_effect=[None, (362, 1120), None]), \
+        with patch('scenarios.work_coffee.find_americano', side_effect=[None, None, (362, 1120), None]), \
              patch('scenarios.work_coffee.read_drink_usage', return_value=None), \
              patch('scenarios.work_coffee.ocr_texts', return_value=[]), \
              patch('scenarios.work_coffee._report') as report, \
@@ -67,7 +120,7 @@ class WorkCoffeeTests(TestCase):
 
     def test_zero_inventory_does_not_click_drink(self):
         scen = self.make_scenario()
-        with patch('scenarios.work_coffee.find_americano', side_effect=[None, (362, 1120)]), \
+        with patch('scenarios.work_coffee.find_americano', side_effect=[None, None, (362, 1120)]), \
              patch('scenarios.work_coffee.read_drink_usage', return_value=None), \
              patch('scenarios.work_coffee.ocr_texts', return_value=[('0', 40, 20, 1)]), \
              patch('scenarios.work_coffee._report') as report, \
