@@ -1,4 +1,4 @@
-"""本地命名调度方案。只保存调度字段，不复制连接、名单或推送凭据。"""
+"""本地命名调度方案，覆盖任务页设置及调度表格。"""
 from __future__ import annotations
 
 import copy
@@ -8,56 +8,44 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from .config import APP_ROOT, TASK_KEYS, TasksConfig, load_config
+from .config import APP_ROOT, TASK_KEYS, Config, TasksConfig, load_config
 from . import settings
+from .time_utils import clock_text, range_text
 
 PROFILE_FILE = APP_ROOT / 'runs' / 'schedule_profiles.json'
 BACKUP_NAME = '切换前（自动备份）'
-SCENE_FIELDS = {
-    'care': ('interval_seconds',),
-    'friend_care': ('enabled', 'interval_seconds', 'time_range'),
-    'hire_friend': ('enabled', 'interval_seconds', 'time_range', 'times_per_day'),
-    'employed': ('enabled', 'interval_seconds', 'off_hours_interval_seconds', 'time_range'),
-    'school': ('times_per_day', 'duration_minutes', 'duration_candidates'),
-    'work': ('times_per_day', 'location', 'duration'),
-    'adventure': ('times_per_day', 'start_time', 'type', 'batch'),
-    'visit': ('start_time', 'continuous_target', 'exit_complete_count'),
-    'pk': ('start_time', 'times_per_day'),
-    'schedule': ('coin_threshold', 'daily_hour_limit'),
-}
 ALLOWED_KEYS = {
     *(f'tasks.{key}' for key in ('order', 'main_order', 'failure_interval')),
     *(f'tasks.{task}.{key}' for task in TASK_KEYS
       for key in asdict(getattr(TasksConfig(), task))),
-    *(f'{scene}.{key}' for scene, fields in SCENE_FIELDS.items() for key in fields),
+    *(key for key, _, _ in settings.TASK_SETTING_FIELDS),
+    'schedule.coin_threshold',  # 兼容原有方案保存范围
 }
 
 
 def capture(config=None) -> dict:
     cfg = config or load_config()
-    result = {f'tasks.{key}': copy.deepcopy(getattr(cfg.tasks, key))
-              for key in ('order', 'main_order', 'failure_interval')}
-    for task in TASK_KEYS:
-        result.update({f'tasks.{task}.{key}': value
-                       for key, value in asdict(getattr(cfg.tasks, task)).items()})
-    for scene, fields in SCENE_FIELDS.items():
-        result.update({f'{scene}.{key}': copy.deepcopy(getattr(getattr(cfg, scene), key))
-                       for key in fields})
-    # YAML 1.1 的未加引号 HH:MM 会加载为分钟数，与现有调度器保持兼容。
-    def clock_text(value):
-        return f'{value // 60:02d}:{value % 60:02d}' if isinstance(value, int) else value
+    result = {}
+    for key in sorted(ALLOWED_KEYS):
+        value = cfg
+        for part in key.split('.'):
+            value = getattr(value, part)
+        result[key] = copy.deepcopy(value)
     for key, value in list(result.items()):
         if key.endswith('.daily_times'):
             result[key] = [clock_text(t) for t in value or []]
         elif key.endswith('.start_time'):
             result[key] = clock_text(value)
+        elif key.endswith(('.time_range', '.enabled_time_range')):
+            result[key] = range_text(value, legacy_equal=True)
     return result
 
 
 def validate(values: dict) -> dict:
     if not isinstance(values, dict) or not values or set(values) - ALLOWED_KEYS:
         raise ValueError('方案包含无效或非调度字段，请重新保存方案')
-    result = {}
+    # 每次按当前字段清单取默认值，旧方案及未来新增字段都能完整恢复。
+    result = copy.deepcopy(capture(Config()))
     for key, value in values.items():
         if key.startswith('tasks.') and key.count('.') == 2:
             field = key.rsplit('.', 1)[1]
@@ -66,19 +54,25 @@ def validate(values: dict) -> dict:
             elif field == 'trigger':
                 ok = value in ('interval', 'daily')
             elif field == 'daily_times':
-                ok = isinstance(value, list) and all(
-                    settings.validate_field('adventure.start_time', t)[0] for t in value)
+                try:
+                    ok = isinstance(value, list)
+                    value = [clock_text(t) for t in value] if ok else value
+                except (TypeError, ValueError):
+                    ok = False
             elif field == 'enabled_time_range':
                 try:
-                    from datetime import datetime
-                    parts = str(value).split('-')
-                    ok = len(parts) == 2
-                    for part in parts:
-                        datetime.strptime(part.strip(), '%H:%M:%S' if part.count(':') == 2 else '%H:%M')
-                except ValueError:
+                    value = range_text(value, legacy_equal=True)
+                    ok = True
+                except (TypeError, ValueError):
                     ok = False
             else:
                 ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        elif key.endswith('.time_range'):
+            try:
+                value = range_text(value, legacy_equal=True)
+                ok = True
+            except (TypeError, ValueError):
+                ok = False
         else:
             ok, value = settings.validate_field(key, value)
         if not ok:

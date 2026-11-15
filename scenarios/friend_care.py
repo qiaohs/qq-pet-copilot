@@ -30,6 +30,7 @@ from src.scenario import CLICK_INTERVAL, DeviceScenario
 from scenarios.care import CARE_METHODS, ONE_CLICK_PAY_RETRIES, CareScenario
 from scenarios.friend_features import claim_lucky_bag, is_non_friend_page
 from scenarios.visit import VisitScenario
+from src.time_utils import parse_range, in_clock_range
 
 MAX_FRIEND_SWITCHES = 30  # 查找/切回目标好友时最多切换次数（防无限切换）
 FRIEND_CARE_RETRIES = 2   # 当前好友护理偶发卡顿时的原地重试次数
@@ -42,22 +43,17 @@ def parse_friend_names(value: str) -> list[str]:
 
 
 def parse_time_range(value: str, name: str = 'friend_care.time_range') -> tuple:
-    """解析时间段 'HH:MM-HH:MM' 为 (开始, 结束) time。"""
+    """解析时间段，分钟级起点补 00 秒、终点补 59 秒。"""
     try:
-        start_s, end_s = str(value).split('-', 1)
-        start = datetime.strptime(start_s.strip(), '%H:%M').time()
-        end = datetime.strptime(end_s.strip(), '%H:%M').time()
+        return parse_range(value, legacy_equal=True)
     except ValueError:
         raise ValueError(
             f'config.yaml 中 {name} 格式无效: {value!r}，应为 HH:MM-HH:MM') from None
-    return start, end
 
 
 def in_time_range(now, start, end) -> bool:
-    """now 是否在 [start, end) 时间段内（end <= start 视为跨零点，如 22:00-02:00）。"""
-    if end > start:
-        return start <= now < end
-    return now >= start or now < end
+    """包含结束秒，结束早于开始时支持跨零点。"""
+    return in_clock_range(now, start, end)
 
 
 class _FriendCare(CareScenario):

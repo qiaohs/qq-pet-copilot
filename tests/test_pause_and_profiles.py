@@ -69,8 +69,9 @@ class ProfileTests(unittest.TestCase):
         values = profiles.capture(cfg)
         self.assertEqual(values['tasks.visit.daily_times'], ['16:10'])
         profiles.validate(values)
-        self.assertFalse(any('friend_name' in key or key.startswith(('gui.', 'adb.', 'notify.'))
-                             for key in values))
+        self.assertTrue({'friend_care.friend_name', 'hire_friend.friend_name', 'pk.friend_name',
+                         'school.auto_calcium_milk', 'work.auto_americano'}.issubset(values))
+        self.assertFalse(any(key.startswith(('gui.', 'adb.', 'notify.')) for key in values))
 
     def test_apply_changes_only_schedule_and_rechecks_preview(self):
         current = profiles.capture(Config())

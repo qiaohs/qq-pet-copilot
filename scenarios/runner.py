@@ -102,6 +102,7 @@ from src.progress import (
     log,
 )
 from src.queue_status import save_queue_status
+from src.time_utils import parse_clock, parse_range, in_clock_range
 from src.recover import launch_emulator_if_offline, reenter_pet
 from src.scenario import StatBlocked, TaskDeferred
 from src.status_cache import update_status
@@ -136,11 +137,9 @@ class ScenarioFailed(Exception):
 
 def parse_hhmm(value, field: str):
     """解析 HH:MM 时间配置（YAML 1.1 会把不带引号的 9:00 解析成分钟数 540）。"""
-    if isinstance(value, int):
-        value = f'{value // 60:02d}:{value % 60:02d}'
     try:
-        return datetime.strptime(value, '%H:%M').time()
-    except ValueError:
+        return parse_clock(value)
+    except (TypeError, ValueError):
         raise ValueError(f'config.yaml 中 {field} 格式无效: {value!r}，应为 HH:MM') from None
 
 
@@ -215,7 +214,7 @@ class Runner:
             # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
             start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
         try:
-            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
+            self.adventure_start = parse_clock(start_time)
         except ValueError:
             raise ValueError(
                 f'config.yaml 中 adventure.start_time 格式无效: {adv.start_time!r}，应为 HH:MM')
@@ -686,7 +685,7 @@ class Runner:
             # YAML 1.1 会把不带引号的 9:00 解析成分钟数 540，转回 HH:MM
             start_time = f'{start_time // 60:02d}:{start_time % 60:02d}'
         try:
-            self.adventure_start = datetime.strptime(start_time, '%H:%M').time()
+            self.adventure_start = parse_clock(start_time)
         except ValueError:
             log(f'冒险时间格式无效 {start_time!r}，沿用旧值')
 
@@ -1059,30 +1058,20 @@ class _QueueTask:
 
 def _parse_clock(value, field: str):
     """解析 HH:MM 或 HH:MM:SS 时间（YAML 1.1 会把不带引号的 9:00 解析成分钟数 540）。"""
-    if isinstance(value, int):
-        value = f'{value // 60:02d}:{value % 60:02d}'
-    for fmt in ('%H:%M:%S', '%H:%M'):
-        try:
-            return datetime.strptime(str(value), fmt).time()
-        except ValueError:
-            continue
-    raise ValueError(f'{field} 时间格式无效: {value!r}，应为 HH:MM 或 HH:MM:SS')
+    return parse_hhmm(value, field)
 
 
 def _parse_range(value, field: str) -> tuple:
     """解析 'HH:MM:SS-HH:MM:SS'（也接受 HH:MM）时间窗。"""
     try:
-        start_s, end_s = str(value).split('-', 1)
-        return _parse_clock(start_s.strip(), field), _parse_clock(end_s.strip(), field)
+        return parse_range(value, legacy_equal=True)
     except ValueError:
-        raise ValueError(f'{field} 格式无效: {value!r}，应为 HH:MM:SS-HH:MM:SS') from None
+        raise ValueError(f'{field} 格式无效: {value!r}，应为 HH:mm-HH:mm') from None
 
 
 def _in_clock_range(now, start, end) -> bool:
-    """now 是否在 [start, end) 时间窗内（end <= start 视为跨零点）。"""
-    if end > start:
-        return start <= now < end
-    return now >= start or now < end
+    """包含结束秒，结束早于开始时支持跨零点。"""
+    return in_clock_range(now, start, end)
 
 
 class TaskQueueRunner(Runner):
@@ -1301,8 +1290,8 @@ class TaskQueueRunner(Runner):
     @staticmethod
     def _rest_end_at(now: datetime, start, end) -> datetime:
         """当前处于休息窗时，返回本次休息结束时间（支持跨零点）。"""
-        end_at = datetime.combine(now.date(), end)
-        if end <= start and now.time() >= start:
+        end_at = datetime.combine(now.date(), end) + timedelta(seconds=1)
+        if end_at <= now:
             end_at += timedelta(days=1)
         return end_at
 

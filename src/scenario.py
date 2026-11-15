@@ -18,6 +18,7 @@ from .progress import (
     log,
 )
 from .u2dev import U2Device
+from .time_utils import parse_range, in_clock_range
 
 # ---- 可调参数 ----
 CLICK_INTERVAL = 1.0       # 连续点击/重试间隔（秒）
@@ -490,16 +491,11 @@ class DeviceScenario:
                 or not bool(getattr(ec, 'off_hours_recall', True)):
             return False
         try:
-            start_s, end_s = str(ec.time_range).split('-', 1)
-            start = datetime.strptime(start_s.strip(), '%H:%M').time()
-            end = datetime.strptime(end_s.strip(), '%H:%M').time()
+            start, end = parse_range(ec.time_range, legacy_equal=True)
         except (TypeError, ValueError):
             return False
         now = datetime.now().time()
-        # 与调度器一致使用左闭右开区间；结束时刻起算非被雇佣时段。
-        in_window = (start <= now < end if end > start
-                     else now >= start or now < end)
-        return not in_window
+        return not in_clock_range(now, start, end)
 
     def notify_off_hours_employed_once(self) -> bool:
         """非时段被雇佣只通知一次，返回本次是否实际触发了通知。"""

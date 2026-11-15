@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from src.notify import send_employment_time, send_unemployed_reminder
 from src.progress import count_cross, log
 from src.scenario import BUSY_GATE_ATTEMPTS, DeviceScenario
+from src.time_utils import parse_range, in_clock_range
 
 
 class EmployedScenario(DeviceScenario):
@@ -64,16 +65,12 @@ class EmployedScenario(DeviceScenario):
         if not ec.enabled or not getattr(ec, 'available_reminder', True):
             return
         now = now or datetime.now()
-        start_s, end_s = ec.time_range.split('-', 1)
-        start = datetime.strptime(start_s.strip(), '%H:%M').time()
-        end = datetime.strptime(end_s.strip(), '%H:%M').time()
-        current = now.time()
-        in_window = (start <= current < end if end > start
-                     else current >= start or current < end)
-        if not in_window:
+        start, end = parse_range(ec.time_range, legacy_equal=True)
+        current = now.time().replace(microsecond=0)
+        if not in_clock_range(current, start, end):
             return
         day = now.date()
-        if end <= start and current < end:
+        if end <= start and current <= end:
             day -= timedelta(days=1)
         window = f'{day.isoformat()}:{ec.time_range}'
         if self._employment_time_notified == window:

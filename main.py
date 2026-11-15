@@ -56,7 +56,7 @@ def _prepare_windowed_streams() -> None:
 _prepare_windowed_streams()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTime, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -95,7 +95,6 @@ from qfluentwidgets import (
     SwitchButton,
     TableWidget,
     Theme,
-    TimeEdit,
     TransparentToolButton,
     isDarkTheme,
     setTheme,
@@ -110,6 +109,8 @@ import win32process
 from src import settings as settings_io
 from src.runtime_control import CONTROL_PREFIX
 from src import schedule_profiles
+from src.time_edit import TimeInput
+from src.time_utils import parse_clock, parse_range, range_text, in_clock_range
 from src.adb.device import Device
 from src.emulator import EMULATOR_TYPES
 from src.config import (
@@ -277,13 +278,6 @@ class _NoWheelSpinBox(SpinBox):
         event.ignore()
 
 
-class _NoWheelTimeEdit(TimeEdit):
-    """时间编辑框：禁用鼠标滚轮改值（同 _NoWheelSpinBox，防手滑）。"""
-
-    def wheelEvent(self, event):
-        event.ignore()
-
-
 class _NoInsertEditableComboBox(EditableComboBox):
     """可编辑下拉：手动输入不追加进下拉列表（EditableComboBox 回车默认会把
     输入文本 addItem 进去，设备序列号下拉不需要这个行为）。"""
@@ -330,66 +324,7 @@ EMULATOR_SETTING_KEYS = {
 }
 
 # 任务选项卡字段：任务队列顺序 + 各场景任务相关设置
-TASK_SETTING_FIELDS = [
-    ('tasks.order', '任务执行顺序（> 分隔）', 'str'),
-    ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
-    ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
-    ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
-    ('school.duration_minutes', '学习时长识别失败兜底（分钟）', 'int'),
-    ('school.duration_candidates', '学习时长候选（逗号分隔）', 'str'),
-    ('school.auto_calcium_milk', '开课时自动喝高钙奶（仅尝试一次）', 'bool'),
-    ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
-    ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
-    ('work.location', '打工地点', list(settings_io.WORK_LOCATIONS)),
-    ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
-    ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
-    ('work.auto_americano', '开工时自动喝元气美式（仅尝试一次）', 'bool'),
-    ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
-    ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
-    ('adventure.start_time', '冒险调度时间', 'str'),
-    ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
-    ('adventure.batch', '单轮冒险次数', 'int'),
-    ('adventure.type', '冒险类型', ['附近走走', '诗和远方']),
-    ('visit.continuous_target', '踩踩连续运行目标（0 不踩）', 'int'),
-    ('visit.exit_complete_count', '踩踩退出后完成阈值（0 禁用）', 'int'),
-    ('visit.start_time', '踩踩调度时间', 'str'),
-    ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
-    ('pk.start_time', 'PK 调度时间', 'str'),
-    ('pk.friend_name', '仅 PK 这些好友（完整昵称，逗号分隔；留空不 PK）', 'str'),
-    ('pk.max_scan_count', 'PK 最大遍历好友数', 'int'),
-    ('friend_care.enabled', '启用好友护理', 'bool'),
-    ('friend_care.time_range', '好友护理时间段', 'str'),
-    ('friend_care.friend_name', '护理好友名称（逗号分隔多个）', 'str'),
-    ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
-    ('friend_care.energy_target', '好友喂食目标体力', 'int'),
-    ('friend_care.clean_target', '好友洗澡目标清洁', 'int'),
-    ('friend_care.post_one_click_care', '护理完成后点击“照顾一下”', 'bool'),
-    ('friend_care.max_scan_count', '好友护理最大遍历数', 'int'),
-    ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
-    ('hire_friend.enabled', '雇佣好友开关', 'bool'),
-    ('hire_friend.time_range', '雇佣好友时间段', 'str'),
-    ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
-    ('hire_friend.friend_name', '雇佣好友名称（逗号分隔多个）', 'str'),
-    ('hire_friend.max_scan_count', '雇佣好友最大遍历数', 'int'),
-    ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
-    ('friend_navigation.stop_at_non_friend', '遇到非好友时停止遍历', 'bool'),
-    ('friend_navigation.min_scan_count', '非好友停止前最少遍历数', 'int'),
-    ('lucky_bag.self_enabled', '护理自己时领取福袋', 'bool'),
-    ('lucky_bag.friend_enabled', '好友护理时领取福袋', 'bool'),
-    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
-    ('care.energy_threshold', '体力阈值', 'int'),
-    ('care.clean_threshold', '清洁阈值', 'int'),
-    ('care.interval_seconds', '护理间隔（秒）', 'int'),
-    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
-    ('employed.enabled', '被雇佣开关', 'bool'),
-    ('employed.time_range', '被雇佣时间段', 'str'),
-    ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
-    ('employed.off_hours_recall', '非被雇佣时段按50/50召回并通知', 'bool'),
-    ('employed.off_hours_interval_seconds', '非被雇佣时段检查间隔（秒）', 'int'),
-    ('employed.unemployed_reminder', '时段内连续未被雇佣提醒', 'bool'),
-    ('employed.available_reminder', '进入被雇佣时段空闲时提醒', 'bool'),
-    ('employed.unemployed_reminder_minutes', '未被雇佣提醒等待（分钟）', 'int'),
-]
+TASK_SETTING_FIELDS = settings_io.TASK_SETTING_FIELDS
 
 # 调度选项卡的任务显示名（任务键定义在 src/config.py 的 TASK_KEYS）
 SCHEDULE_TASK_NAMES = {'care': '护理', 'friend_care': '好友护理',
@@ -871,6 +806,9 @@ class ScheduleDiffDialog(QDialog):
     def __init__(self, title, changes, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self.setObjectName('scheduleDiffDialog')
+        background = '#272727' if isDarkTheme() else '#ffffff'
+        self.setStyleSheet(f'#scheduleDiffDialog {{ background-color: {background}; }}')
         self.resize(820, min(580, 160 + len(changes) * 36))
         layout = QVBoxLayout(self)
         table = TableWidget(self)
@@ -1744,7 +1682,7 @@ class MainWindow(MSFluentWindow):
             profiles.addWidget(button)
         profiles.addStretch(1)
         layout.addLayout(profiles)
-        self._profile_status = CaptionLabel('方案仅包含调度、次数与时长；当前任务在切换后继续，下一轮采用新安排。')
+        self._profile_status = CaptionLabel('方案包含调度和任务页的全部设置；旧方案缺少的字段应用默认值。')
         self._profile_status.setWordWrap(True)
         layout.addWidget(self._profile_status)
         self._reload_profile_names()
@@ -1760,6 +1698,8 @@ class MainWindow(MSFluentWindow):
         self.schedule_table.verticalHeader().setDefaultSectionSize(38)
         self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.schedule_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.schedule_table.setMouseTracking(False)
+        self.schedule_table.viewport().setMouseTracking(False)
         layout.addWidget(self.schedule_table, 1)
         note = CaptionLabel('开关/执行间隔/启用时段可直接编辑（保存到 config.yaml，调度器下一轮生效）；'
                             '"下次执行"每秒刷新：调度器运行时显示精确时间，未运行时按配置推算；'
@@ -1840,7 +1780,7 @@ class MainWindow(MSFluentWindow):
                 return
             if not ScheduleDiffDialog(f'应用调度方案：{name}', changes, self).exec():
                 return
-            # 保存切换前的有效调度值，方便下拉选择恢复；不包含凭据与名单。
+            # 保存切换前的完整任务设置，方便从下拉选择恢复。
             store['profiles'][schedule_profiles.BACKUP_NAME] = current
             schedule_profiles.save_store(store)
             schedule_profiles.apply(target, current)
@@ -1909,32 +1849,19 @@ class MainWindow(MSFluentWindow):
     def _clock_to_time(value):
         """把 HH:MM（或 HH:MM:SS / YAML 1.1 解析出的分钟数）转成 datetime.time；
         解析失败返回 None。"""
-        if isinstance(value, int):
-            value = f'{value // 60:02d}:{value % 60:02d}'
-        for fmt in ('%H:%M', '%H:%M:%S'):
-            try:
-                return datetime.strptime(str(value), fmt).time()
-            except ValueError:
-                continue
-        return None
+        try:
+            return parse_clock(value)
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _parse_range_text(cls, value: str) -> bool:
         """校验启用时段文本：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS（允许跨零点）。"""
         try:
-            start_s, end_s = str(value).split('-', 1)
-        except ValueError:
+            parse_range(value)
+            return True
+        except (TypeError, ValueError):
             return False
-        return (cls._clock_to_time(start_s.strip()) is not None
-                and cls._clock_to_time(end_s.strip()) is not None)
-
-    @staticmethod
-    def _qtime_from_value(value) -> 'QTime':
-        """把 HH:MM 字符串 / YAML 1.1 分钟数转成 QTime，非法回退 00:00。"""
-        if isinstance(value, int):
-            return QTime(value // 60, value % 60)
-        t = QTime.fromString(str(value), 'HH:mm')
-        return t if t.isValid() else QTime(0, 0)
 
     # ---- 表格构建 ----
 
@@ -2008,12 +1935,10 @@ class MainWindow(MSFluentWindow):
     def _make_interval_editor(self, key: str, item, cfg, in_order: bool) -> QWidget:
         if key in ('adventure', 'visit', 'pk'):
             # 每日调度时间（HH:MM）：场景 start_time，保存时同步队列 daily_times
-            te = _NoWheelTimeEdit()
-            te.setDisplayFormat('HH:mm')
-            te.setTime(self._qtime_from_value(getattr(cfg, key).start_time))
+            te = TimeInput()
+            te.setText(getattr(cfg, key).start_time)
             te.setEnabled(in_order)
-            te.setToolTip('每日调度时间（HH:MM）')
-            te.timeChanged.connect(lambda qt, k=key: self._save_schedule_time(k, qt))
+            te.valueCommitted.connect(lambda value, k=key: self._save_schedule_time(k, value))
             return te
         if key in ('care', 'hire_friend', 'friend_care'):
             # 调度间隔（秒）：护理用 tasks.care.interval_seconds，好友护理/雇佣好友用场景值
@@ -2023,6 +1948,9 @@ class MainWindow(MSFluentWindow):
             spin.setRange(1, 999999)
             spin.setValue(max(1, int(value)))
             spin.setSuffix(' 秒')
+            spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            spin.lineEdit().setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            spin.setKeyboardTracking(False)
             spin.setEnabled(in_order)
             spin.setToolTip('调度间隔（秒）')
             spin.valueChanged.connect(lambda v, k=key: self._save_schedule_interval(k, v))
@@ -2041,13 +1969,10 @@ class MainWindow(MSFluentWindow):
             value = str(getattr(cfg, key).time_range)
         else:
             value = str(item.enabled_time_range)
-        edit = LineEdit()
+        edit = TimeInput(is_range=True)
         edit.setText(value)
         edit.setEnabled(in_order)
-        edit.setPlaceholderText('如 00:00-23:59 或 08:00:00-20:00:00')
-        edit.setToolTip('启用时段：HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，结束早于开始视为跨零点')
-        edit.editingFinished.connect(
-            lambda _e=edit, k=key: self._save_schedule_range(k, _e.text()))
+        edit.valueCommitted.connect(lambda value, k=key: self._save_schedule_range(k, value))
         return edit
 
     # ---- 调度表格保存 ----
@@ -2096,9 +2021,9 @@ class MainWindow(MSFluentWindow):
             mapping = {f'tasks.{key}.interval_seconds': seconds}
         self._save_schedule_values(mapping)
 
-    def _save_schedule_time(self, key: str, qtime: 'QTime') -> None:
+    def _save_schedule_time(self, key: str, value: str) -> None:
         """保存每日调度时间：场景 start_time + 队列 daily_times 一起改，保持一致。"""
-        value = qtime.toString('HH:mm')
+        value = parse_clock(value).strftime('%H:%M')
         quoted = DoubleQuotedScalarString(value)
         self._save_schedule_values({f'{key}.start_time': quoted,
                                     f'tasks.{key}.daily_times': [quoted]})
@@ -2108,7 +2033,7 @@ class MainWindow(MSFluentWindow):
         enabled_time_range；格式非法恢复原值。"""
         value = text.strip()
         if not self._parse_range_text(value):
-            log(f'启用时段格式无效: {value!r}，应为 HH:MM-HH:MM 或 HH:MM:SS-HH:MM:SS，已恢复')
+            log(f'启用时段格式无效: {value!r}，应为 HH:mm-HH:mm，已恢复')
             if self._schedule_rows:
                 try:
                     self._rebuild_schedule_table(
@@ -2116,7 +2041,7 @@ class MainWindow(MSFluentWindow):
                 except Exception as e:
                     log(f'恢复调度表格失败: {e}')
             return
-        quoted = DoubleQuotedScalarString(value)
+        quoted = DoubleQuotedScalarString(range_text(value))
         if key in ('hire_friend', 'friend_care'):
             mapping = {f'{key}.time_range': quoted,
                        f'tasks.{key}.enabled_time_range': quoted}
@@ -2151,16 +2076,10 @@ class MainWindow(MSFluentWindow):
     def _in_time_range(cls, now, value: str) -> bool:
         """now 是否在 HH:MM-HH:MM 时间段内（结束早于开始视为跨零点）。"""
         try:
-            start_s, end_s = str(value).split('-', 1)
-        except ValueError:
+            start, end = parse_range(value, legacy_equal=True)
+        except (TypeError, ValueError):
             return False
-        start = cls._clock_to_time(start_s.strip())
-        end = cls._clock_to_time(end_s.strip())
-        if start is None or end is None:
-            return False
-        if end > start:
-            return start <= now.time() < end
-        return now.time() >= start or now.time() < end
+        return in_clock_range(now.time(), start, end)
 
     def _predict_next(self, key: str, item, cfg, now) -> str:
         """调度器未运行/无运行时状态时，按配置推算下次执行（展示用途）。"""
@@ -2303,7 +2222,10 @@ class MainWindow(MSFluentWindow):
 
         返回放入表单行的控件（'text' 类型返回含教程链接的列容器）。
         """
-        if kind == 'int':
+        if key.endswith(('.start_time', '.time_range')):
+            w = TimeInput(is_range=key.endswith('.time_range'))
+            w.valueCommitted.connect(lambda _value, k=key: self.save_field(k))
+        elif kind == 'int':
             w = _NoWheelSpinBox()
             # 体力/清洁是 0-100，其余次数/阈值放宽
             if key == 'schedule.ui_wait_multiplier':

@@ -1,7 +1,6 @@
 """config.yaml 读写（ruamel 往返模式，保留注释和格式），供设置页面使用。"""
 from __future__ import annotations
 
-from datetime import datetime
 import os
 from pathlib import Path
 import tempfile
@@ -11,12 +10,75 @@ from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, LiteralScalarString
 
 from .config import CONFIG_FILE, MAIN_TASK_KEYS, TASK_KEYS
+from .time_utils import clock_text, range_text
 
 _yaml = YAML()  # 默认 round-trip，保留注释
 
 # 打工地点可选列表（设置页下拉 + 校验共用，新增地图时在这里加）
 WORK_LOCATIONS = ('风铃旅社', '彩虹画室', '迷雾侦探所', '星尘魔法塔',
                   '咕噜厨房', '竹影武馆', '云朵梦舍', '闪耀星屋')
+
+# 任务页与命名方案共用字段清单，新增任务设置同时纳入方案。
+TASK_SETTING_FIELDS = [
+    ('tasks.order', '任务执行顺序（> 分隔）', 'str'),
+    ('tasks.main_order', '主任务顺序（> 分隔）', 'str'),
+    ('school.attribute', '属性点课程', ['力量', '智力', '魅力']),
+    ('school.times_per_day', '每天学习次数（0 不限）', 'int'),
+    ('school.duration_minutes', '学习时长识别失败兜底（分钟）', 'int'),
+    ('school.duration_candidates', '学习时长候选（逗号分隔）', 'str'),
+    ('school.auto_calcium_milk', '开课时自动喝高钙奶（仅尝试一次）', 'bool'),
+    ('schedule.daily_hour_limit', '学习工作时长上限（小时，0 不限）', 'int'),
+    ('schedule.encourage_times', '鼓励次数（进行中页面快速点击）', 'int'),
+    ('work.location', '打工地点', list(WORK_LOCATIONS)),
+    ('work.duration', '打工时长选择', ['10分钟', '45分钟', '2小时']),
+    ('work.times_per_day', '每天打工次数（0 不限）', 'int'),
+    ('work.auto_americano', '开工时自动喝元气美式（仅尝试一次）', 'bool'),
+    ('work.employ_scroll_limit', '雇佣拖动上限', 'int'),
+    ('adventure.times_per_day', '每天冒险次数（0 不冒险）', 'int'),
+    ('adventure.start_time', '冒险调度时间', 'str'),
+    ('adventure.skip_bad_weather', '冒险跳过"天色不对"', 'bool'),
+    ('adventure.batch', '单轮冒险次数', 'int'),
+    ('adventure.type', '冒险类型', ['附近走走', '诗和远方']),
+    ('visit.continuous_target', '踩踩连续运行目标（0 不踩）', 'int'),
+    ('visit.exit_complete_count', '踩踩退出后完成阈值（0 禁用）', 'int'),
+    ('visit.start_time', '踩踩调度时间', 'str'),
+    ('pk.times_per_day', '每天 PK 次数（0 不 PK）', 'int'),
+    ('pk.start_time', 'PK 调度时间', 'str'),
+    ('pk.friend_name', '仅 PK 这些好友（完整昵称，逗号分隔；留空不 PK）', 'str'),
+    ('pk.max_scan_count', 'PK 最大遍历好友数', 'int'),
+    ('friend_care.enabled', '启用好友护理', 'bool'),
+    ('friend_care.time_range', '好友护理时间段', 'str'),
+    ('friend_care.friend_name', '护理好友名称（逗号分隔多个）', 'str'),
+    ('friend_care.method', '护理好友方式', ['一键护理', 'ocr检测']),
+    ('friend_care.energy_target', '好友喂食目标体力', 'int'),
+    ('friend_care.clean_target', '好友洗澡目标清洁', 'int'),
+    ('friend_care.post_one_click_care', '护理完成后点击“照顾一下”', 'bool'),
+    ('friend_care.max_scan_count', '好友护理最大遍历数', 'int'),
+    ('friend_care.interval_seconds', '好友护理调度间隔（秒）', 'int'),
+    ('hire_friend.enabled', '雇佣好友开关', 'bool'),
+    ('hire_friend.time_range', '雇佣好友时间段', 'str'),
+    ('hire_friend.interval_seconds', '雇佣好友调度间隔（秒）', 'int'),
+    ('hire_friend.friend_name', '雇佣好友名称（逗号分隔多个）', 'str'),
+    ('hire_friend.max_scan_count', '雇佣好友最大遍历数', 'int'),
+    ('hire_friend.times_per_day', '雇佣好友次数（0 不雇佣）', 'int'),
+    ('friend_navigation.stop_at_non_friend', '遇到非好友时停止遍历', 'bool'),
+    ('friend_navigation.min_scan_count', '非好友停止前最少遍历数', 'int'),
+    ('lucky_bag.self_enabled', '护理自己时领取福袋', 'bool'),
+    ('lucky_bag.friend_enabled', '好友护理时领取福袋', 'bool'),
+    ('care.method', '护理方式', ['一键护理', 'ocr检测']),
+    ('care.energy_threshold', '体力阈值', 'int'),
+    ('care.clean_threshold', '清洁阈值', 'int'),
+    ('care.interval_seconds', '护理间隔（秒）', 'int'),
+    ('employed.action', '被雇佣后处理', ['等到25/75（小于45min）', '等到25/75', '立刻召回']),
+    ('employed.enabled', '被雇佣开关', 'bool'),
+    ('employed.time_range', '被雇佣时间段', 'str'),
+    ('employed.interval_seconds', '被雇佣检查间隔（秒）', 'int'),
+    ('employed.off_hours_recall', '非被雇佣时段按50/50召回并通知', 'bool'),
+    ('employed.off_hours_interval_seconds', '非被雇佣时段检查间隔（秒）', 'int'),
+    ('employed.unemployed_reminder', '时段内连续未被雇佣提醒', 'bool'),
+    ('employed.available_reminder', '进入被雇佣时段空闲时提醒', 'bool'),
+    ('employed.unemployed_reminder_minutes', '未被雇佣提醒等待（分钟）', 'int'),
+]
 
 # 各配置项默认值：设置页校验不通过时恢复
 DEFAULTS = {
@@ -108,12 +170,14 @@ DEFAULTS = {
 def validate_field(key: str, value):
     """校验单个配置项，返回 (是否通过, 修正后的值)；不通过时给出默认值。"""
     default = DEFAULTS.get(key)
+    choices = next((kind for field, _, kind in TASK_SETTING_FIELDS
+                    if field == key and isinstance(kind, list)), None)
+    if choices is not None and value not in choices:
+        return False, default
     if key in ('adventure.start_time', 'visit.start_time', 'pk.start_time'):
         try:
-            datetime.strptime(str(value), '%H:%M')
-            # 必须带引号写回：9:00 不带引号会被 YAML 1.1 解析成整数 540
-            return True, DoubleQuotedScalarString(str(value))
-        except ValueError:
+            return True, DoubleQuotedScalarString(clock_text(value))
+        except (TypeError, ValueError):
             return False, DoubleQuotedScalarString(str(default))
     if key == 'work.location':
         return (True, value) if value in WORK_LOCATIONS else (False, default)
@@ -142,12 +206,8 @@ def validate_field(key: str, value):
         return (True, value) if value in ('ocr检测', '一键护理') else (False, default)
     if key in ('friend_care.time_range', 'employed.time_range', 'hire_friend.time_range'):
         try:
-            start_s, end_s = str(value).split('-', 1)
-            datetime.strptime(start_s.strip(), '%H:%M')
-            datetime.strptime(end_s.strip(), '%H:%M')
-            # 必须带引号写回：9:00 不带引号会被 YAML 1.1 解析成整数 540
-            return True, DoubleQuotedScalarString(str(value))
-        except ValueError:
+            return True, DoubleQuotedScalarString(range_text(value))
+        except (TypeError, ValueError):
             return False, DoubleQuotedScalarString(str(default))
     if key in ('friend_care.friend_name', 'hire_friend.friend_name', 'pk.friend_name'):
         return True, str(value).strip()

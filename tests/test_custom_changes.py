@@ -762,15 +762,15 @@ class CustomChangesTest(TestCase):
         active = runner._active_rest(tasks, ['rest1', 'rest2'],
                                      datetime(2026, 9, 27, 19, 50))
         self.assertEqual(active[0].key, 'rest1')
-        self.assertEqual(active[1], datetime(2026, 9, 27, 19, 58))
+        self.assertEqual(active[1], datetime(2026, 9, 27, 19, 59))
         self.assertIsNone(runner._active_rest(
-            tasks, ['rest1', 'rest2'], datetime(2026, 9, 27, 19, 58)))
+            tasks, ['rest1', 'rest2'], datetime(2026, 9, 27, 19, 59)))
 
         rest1.cfg.enabled = False
         rest2.cfg.enabled = True
         active = runner._active_rest(tasks, ['rest1', 'rest2'],
                                      datetime(2026, 9, 27, 23, 55))
-        self.assertEqual(active[1], datetime(2026, 9, 28, 0, 10))
+        self.assertEqual(active[1], datetime(2026, 9, 28, 0, 11))
 
     def test_care_runs_before_rest_and_rest_blocks_employed_check(self):
         runner = TaskQueueRunner.__new__(TaskQueueRunner)
