@@ -28,6 +28,7 @@ class SchoolMilkTest(TestCase):
             }.get(name)),
             click=Mock(),
             go_back=Mock(return_value=True),
+            _encourage_burst=Mock(return_value=12),
         )
         return scen
 
@@ -43,19 +44,23 @@ class SchoolMilkTest(TestCase):
                                  ('杯', 420, 950, 0.95)]
         self.assertEqual(read_milk_usage(screen), (1, 45))
 
-    def test_success_counter_does_not_require_returned_classroom_and_returns_once(self):
+    def test_success_encourages_before_closing_only_item_menu(self):
         scen = self.make_scenario()
+        events = []
+        scen.click.side_effect = lambda *args: events.append(args)
+        scen._encourage_burst.side_effect = lambda: events.append('encourage') or 12
         with patch('scenarios.school_milk.read_milk_usage', side_effect=[None, (1, 45)]), \
                 patch('scenarios.school_milk.find_yellow_milk',
                       side_effect=[None, (350, 1053)]), \
                 patch('src.ocr.ocr_texts', return_value=[]), \
                 patch('scenarios.school_milk._report') as report, \
                 patch('scenarios.school_milk.time.sleep'):
-            drink_milk_once(scen)
-            drink_milk_once(scen)
+            self.assertTrue(drink_milk_once(scen))
+            self.assertFalse(drink_milk_once(scen))
         report.assert_not_called()
-        self.assertEqual(scen.click.call_count, 2)
-        scen.go_back.assert_called_once()
+        self.assertEqual(events, [(316, 1025), (350, 1053), 'encourage', (658, 942)])
+        scen._encourage_burst.assert_called_once()
+        scen.go_back.assert_not_called()
 
     def test_existing_usage_counter_prevents_second_drink(self):
         scen = self.make_scenario()
@@ -65,8 +70,9 @@ class SchoolMilkTest(TestCase):
                 patch('scenarios.school_milk._report') as report:
             drink_milk_once(scen)
         self.assertEqual(scen.click.call_args_list[0].args, (316, 1025))
-        self.assertEqual(scen.click.call_count, 1)
-        scen.go_back.assert_called_once()
+        self.assertEqual(scen.click.call_count, 2)
+        scen._encourage_burst.assert_called_once()
+        scen.go_back.assert_not_called()
         report.assert_not_called()
 
     def test_entry_follows_learning_header_when_panel_moves_down(self):
@@ -166,6 +172,22 @@ class SchoolMilkTest(TestCase):
             scen.attend_class()
         drink.assert_called_once_with(scen)
         self.assertEqual(events, ['started', 'milk', 'pending'])
+
+    def test_new_class_preserves_pending_encouragement_after_item_burst(self):
+        for encouraged in (False, True):
+            with self.subTest(encouraged=encouraged):
+                scen = SchoolScenario.__new__(SchoolScenario)
+                scen.defer_wait = True
+                scen.select_course = Mock()
+                scen.click_until_gone_or_see = Mock()
+                scen._detect_duration_from_remaining = Mock()
+                scen.defer_busy_end = Mock()
+                scen.ensure_main_page = Mock()
+                with patch('scenarios.school.drink_milk_once', return_value=encouraged):
+                    scen.attend_class()
+                self.assertTrue(scen.defer_busy_end.call_args.kwargs['encourage'])
+                self.assertEqual(scen.defer_busy_end.call_args.kwargs['encourage_on_start'],
+                                 not encouraged)
 
     def test_milk_setting_requires_boolean(self):
         self.assertEqual(validate_field('school.auto_calcium_milk', True), (True, True))

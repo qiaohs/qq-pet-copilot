@@ -91,12 +91,12 @@ def _report(scen, reason: str, screen=None) -> None:
         log(f'高钙奶通知失败: {exc}')
 
 
-def drink_milk_once(scen) -> None:
-    """仅由 attend_class 的开课入口调用；加号和黄色奶盒各最多点击一次。"""
+def drink_milk_once(scen) -> bool:
+    """开课后只尝试一次喝奶，返回是否已在收起道具前完成鼓励。"""
     if not getattr(scen.cfg.school, 'auto_calcium_milk', False):
-        return
+        return False
     if getattr(scen, '_milk_attempted', False):
-        return
+        return False
     # 点击前就消费本节机会，点击/截图/OCR 失败也不允许再次投喂。
     scen._milk_attempted = True
     panel_open = False
@@ -107,7 +107,7 @@ def drink_milk_once(scen) -> None:
             raise RuntimeError('开课后未确认正在学习，跳过喝奶')
         if find_yellow_milk(screen, used=True, anchor_y=learning[1]):
             log('本节已显示黄色高钙奶，跳过喝奶')
-            return
+            return False
         hint = scen.see('school_milk_add_hint', screen)
         if not hint:
             raise RuntimeError('未确认学习道具入口提示，跳过喝奶')
@@ -126,7 +126,7 @@ def drink_milk_once(scen) -> None:
             raise RuntimeError('点击加号后未确认高钙奶道具面板')
         if read_milk_usage(screen):
             log('道具面板已显示本节喝奶记录，跳过再次使用')
-            return
+            return scen._encourage_burst() > 0
         milk = find_yellow_milk(screen, anchor_y=title[1])
         if milk is None:
             raise RuntimeError('未找到可用的黄色高钙奶，可能已用完或图像未识别')
@@ -155,20 +155,22 @@ def drink_milk_once(scen) -> None:
                 log('课堂道具栏已显示黄色高钙奶，结束本次喝奶流程')
             else:
                 _report(scen, '点击黄色高钙奶后未确认使用成功，继续学习', screen)
+        return scen._encourage_burst() > 0
     except Exception as exc:
         _report(scen, str(exc))
+        return False
     finally:
         if panel_open:
-            # 先从道具面板返回课堂。计时/pending 登记后，学习场景再返回主页；
-            # 不能在这里盲按两次，否则会在读取学习倒计时前离开课堂。
+            # 鼓励可在道具面板展开时完成。这里只点面板自己的关闭按钮，
+            # 系统返回可能连课堂一起退出，导致之后无法鼓励或读取倒计时。
             try:
                 screen = scen.screen()
                 title = scen.see('school_milk_title', screen)
                 # “使用道具”也包含“道具”，只有高钙奶说明仍在时才能认作道具面板。
-                if title and scen.see('school_milk_panel', screen):
-                    if not scen.go_back(screen=screen):
-                        height, width = screen.shape[:2]
-                        scen.click(round(width * 658 / 720), title[1])
+                if (title and abs(title[0] - screen.shape[1] / 2) <= screen.shape[1] * 0.1
+                        and scen.see('school_milk_panel', screen)):
+                    height, width = screen.shape[:2]
+                    scen.click(round(width * 658 / 720), title[1] + round(height * 20 / 1440))
                     time.sleep(CLICK_INTERVAL)
             except Exception as exc:
                 log(f'收起高钙奶道具面板失败: {exc}；本节不再尝试喝奶')

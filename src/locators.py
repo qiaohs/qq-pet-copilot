@@ -143,7 +143,11 @@ LOCATORS: dict[str, dict] = {
     'school_milk_add_hint': {'ocr': ['使用道具'], 'ocr_region': (0.5, 0.95)},
     'school_milk_title': {'ocr': ['道具'], 'ocr_region': (0.5, 0.95)},
     'school_milk_panel': {'ocr': ['高钙奶'], 'ocr_region': (0.5, 0.95)},
-    'school_end': {'xpath': ['//*[@content-desc="分享"]']},
+    # “分享”在其他页面也可能存在，必须用学习结算自身的文案确认结束。
+    'school_end': {
+        'xpath': ['//*[contains(@content-desc,"教师评语") or contains(@content-desc,"宠物成绩单")'
+                  ' or @content-desc="继续学习"]'],
+        'ocr': ['教师评语', '宠物成绩单', '继续学习']},
     # 毕业标志：当前学园毕业后学校面板没有"去上课"，而是"去找同学玩"；
     # 此时点"关闭"再点两次 back 回主页面，重新进学校选下一阶段课程
     'school_graduated': {'xpath': ['//*[@content-desc="去找同学玩"]']},
@@ -151,7 +155,8 @@ LOCATORS: dict[str, dict] = {
     # 学习/打工进行中页面的"鼓励宠物"按钮（点击提升心情/互动收益；结算页没有该按钮，
     # 非阻塞调度在登记 pending 离开进行中页面前就地快速点击，见 scenario._encourage_burst）。
     # xpath 优先：复用 wait_end 已有的控件树快照，避免 u2 选择器再实时查一次
-    'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物"]']},
+    'encourage_pet': {'xpath': ['//*[@content-desc="鼓励宠物" or @text="鼓励宠物"]'],
+                      'ocr': ['鼓励宠物']},
 
     # ---- 打工 ----
     'work_coffee_add_hint': {'ocr': ['使用道具'], 'ocr_region': (0.5, 0.95)},
@@ -166,7 +171,8 @@ LOCATORS: dict[str, dict] = {
     # work_start 被"去照顾一下"弹窗挡住时：点它进护理，一键护理+back 后回工作面板（work.py _recover_work_start）
     'go_care': {'xpath': ['//*[@content-desc="去照顾一下"]']},
     'work_in': {'ocr': ['正在打工']},
-    'work_end': {'xpath': ['//*[@content-desc="分享"]']},
+    'work_end': {'xpath': ['//*[contains(@content-desc,"打工总结")]'],
+                 'ocr': ['打工总结']},
     'work_outworker': {
         'cache': True,
         # 真正可点的是文案左侧的"+"按钮：从唯一文案"雇佣有额外加成"向上两级

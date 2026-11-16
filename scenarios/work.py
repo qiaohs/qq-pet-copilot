@@ -317,7 +317,7 @@ class WorkScenario(DeviceScenario):
         """工作面板是否有"去打工"按钮：整屏 OCR（约 0.5s），比 dump 控件树快。"""
         return find_text(ocr_fullscreen(self.screen()), '去打工') is not None
 
-    def _start_work(self) -> None:
+    def _start_work(self) -> bool:
         """点"去打工"开始工作，OCR 确认已开始（正在打工）或按钮消失。
 
         OCR 约 0.5s/次，替代原 click_until_gone_or_see 每轮 3 次控件树 dump（十几秒）。
@@ -331,8 +331,8 @@ class WorkScenario(DeviceScenario):
             if find_text(results, '正在打工'):
                 log('开始工作: 已出现 work_in')
                 if clicked:
-                    drink_americano_once(self)
-                return
+                    return drink_americano_once(self)
+                return False
             target = find_text(results, '去打工')
             if target:
                 if not clicked:
@@ -344,8 +344,7 @@ class WorkScenario(DeviceScenario):
                 continue
             if clicked:
                 log('开始工作: work_start 已消失，进入下一阶段')
-                drink_americano_once(self)
-                return
+                return drink_americano_once(self)
             if attempt == 1 or attempt == 3:
                 log(f'开始工作: 未找到 work_start，等待重试 ({attempt}/3)')
             time.sleep(CLICK_INTERVAL)
@@ -412,13 +411,14 @@ class WorkScenario(DeviceScenario):
                 self.select_place()
                 self.select_job()
                 self.hire_friend()
-            self._start_work()
+            encouraged = self._start_work()
             log('已开始工作，等待结束...')
             if self.defer_wait:
                 # 延时收尾：登记 pending（到点由调度器 finish_pending 收尾计数，
                 # 本地 done 不再自增）后回主页面，本轮直接结束
                 self.defer_busy_end('work_in', 'work_end',
-                                    lambda: count_cross('work'), '打工', encourage=True)
+                                    lambda: count_cross('work'), '打工', encourage=True,
+                                    encourage_on_start=not encouraged)
                 self.ensure_main_page()
                 return True
             self.wait_work_end()

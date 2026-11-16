@@ -188,13 +188,13 @@ class FriendHireScenario(FriendCareScenario):
         if not work._has_work_start():
             log('未回到工作面板，重新归位选择框再选一次')
             self._select_job()
-        work._start_work()
+        encouraged = work._start_work()
         log('已开始雇佣打工，等待结束...')
         if self.defer_wait:
             # 延时收尾：登记 pending（到点由调度器 finish_pending 收尾，计雇佣+打工
             # 各一次）后回主页面，本轮直接结束
             self.defer_busy_end('work_in', 'work_end', self._count_hire_and_work,
-                                '雇佣打工', encourage=True)
+                                '雇佣打工', encourage=True, encourage_on_start=not encouraged)
             self.ensure_main_page()
             return
         work.wait_work_end()

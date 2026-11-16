@@ -68,12 +68,12 @@ def _report(scen, reason: str, screen=None) -> None:
         log(f'元气美式通知失败: {exc}')
 
 
-def drink_americano_once(scen) -> None:
-    """只从实际点击开工后的入口调用，加号和饮料各最多点击一次。"""
+def drink_americano_once(scen) -> bool:
+    """开工后只尝试一次饮料，返回是否已在收起道具前完成鼓励。"""
     if not getattr(scen.cfg.work, 'auto_americano', False):
-        return
+        return False
     if getattr(scen, '_coffee_attempted', False):
-        return
+        return False
     scen._coffee_attempted = True
     panel_open = False
     try:
@@ -87,7 +87,7 @@ def drink_americano_once(scen) -> None:
             hint = scen.see('work_coffee_add_hint', screen)
             if working and find_americano(screen, anchor_y=working[1], used=True):
                 log('本次打工道具栏已显示元气美式，结束喝饮料流程')
-                return
+                return False
             plus_y = working[1] + round(height * 170 / 1440) if working else 0
             if (working and hint and hint[0] >= width * 0.5
                     and abs(hint[1] - plus_y) <= height * 0.07
@@ -119,7 +119,7 @@ def drink_americano_once(scen) -> None:
             raise RuntimeError('点击加号后未确认元气美式道具面板')
         if read_drink_usage(screen):
             log('道具面板已显示本次喝饮料记录，结束喝饮料流程')
-            return
+            return scen._encourage_burst() > 0
         coffee = find_americano(screen, anchor_y=title[1])
         if coffee is None:
             raise RuntimeError('未找到可用的元气美式，可能已用完或图像未识别')
@@ -144,8 +144,10 @@ def drink_americano_once(scen) -> None:
                 log('打工道具栏已显示元气美式，结束喝饮料流程')
             else:
                 _report(scen, '点击后未确认使用成功，继续打工', screen)
+        return scen._encourage_burst() > 0
     except Exception as exc:
         _report(scen, str(exc))
+        return False
     finally:
         if panel_open:
             try:

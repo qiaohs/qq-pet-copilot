@@ -21,19 +21,25 @@ class WorkCoffeeTests(TestCase):
                 'work_coffee_panel': (354, 1282, 1),
             }.get(name)),
             click=Mock(),
+            _encourage_burst=Mock(return_value=12),
         )
 
     def test_success_counter_closes_menu_and_only_drinks_once(self):
         scen = self.make_scenario()
+        events = []
+        scen.click.side_effect = lambda *args: events.append(args)
+        scen._encourage_burst.side_effect = lambda: events.append('encourage') or 12
         with patch('scenarios.work_coffee.find_americano', side_effect=[None, None, (362, 1120)]), \
              patch('scenarios.work_coffee.read_drink_usage', side_effect=[None, (1, 1)]), \
              patch('scenarios.work_coffee.ocr_texts', return_value=[('45', 40, 20, 1)]), \
              patch('scenarios.work_coffee._report') as report, \
              patch('scenarios.work_coffee.time.sleep'):
-            drink_americano_once(scen)
-            drink_americano_once(scen)
+            self.assertTrue(drink_americano_once(scen))
+            self.assertFalse(drink_americano_once(scen))
         self.assertEqual([call.args for call in scen.click.call_args_list],
                          [(316, 1169), (362, 1120), (658, 923)])
+        self.assertEqual(events, [(316, 1169), (362, 1120), 'encourage', (658, 923)])
+        scen._encourage_burst.assert_called_once()
         report.assert_not_called()
 
     def test_already_consumed_does_not_click_drink(self):
@@ -168,13 +174,13 @@ class WorkCoffeeTests(TestCase):
         scen.click = Mock()
         with patch('scenarios.work.ocr_fullscreen', side_effect=[
                 [('去打工', 350, 1200, 1)], [('正在打工', 170, 999, 1)]]), \
-             patch('scenarios.work.drink_americano_once') as drink, \
+             patch('scenarios.work.drink_americano_once', return_value=True) as drink, \
              patch('scenarios.work.time.sleep'):
-            scen._start_work()
+            self.assertTrue(scen._start_work())
             drink.assert_called_once_with(scen)
         with patch('scenarios.work.ocr_fullscreen', return_value=[('正在打工', 170, 999, 1)]), \
              patch('scenarios.work.drink_americano_once') as drink:
-            scen._start_work()
+            self.assertFalse(scen._start_work())
             drink.assert_not_called()
 
     def test_setting_requires_boolean(self):

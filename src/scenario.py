@@ -664,13 +664,14 @@ class DeviceScenario:
         return None
 
     def defer_busy_end(self, in_name: str, end_name: str, on_finish, desc: str,
-                       encourage: bool = False) -> bool:
+                       encourage: bool = False, *, encourage_on_start: bool = True) -> bool:
         """延时收尾（非阻塞等待）：检测到进行中就 OCR 剩余时间登记 pending，
         返回 True（调用方回主页面，到点由 finish_pending() 收尾计数）；
         检测到已结束则原地走 wait_end 收尾并 on_finish() 计数，返回 False；
         两种状态都检测不到抛 RuntimeError（页面异常，走场景重试）。
 
         OCR 识别不到剩余时间按 DEFER_FALLBACK_SECONDS 兜底，避免卡死。
+        道具面板内已完成鼓励时，encourage_on_start=False 跳过登记前的重复鼓励。
         """
         for attempt in range(1, DEFER_DETECTION_ATTEMPTS + 1):
             screen, source = self.snapshot()
@@ -680,14 +681,15 @@ class DeviceScenario:
                 on_finish()
                 return False
             if self.see(in_name, screen, source):
-                if encourage:
+                secs = self.read_remaining_seconds(screen)
+                read_at = datetime.now()
+                if encourage and encourage_on_start:
                     # 鼓励按钮只在进行中页面常驻（结算页没有），登记 pending 离开前就地点击
                     self._encourage_burst()
-                secs = self.read_remaining_seconds(screen)
                 if secs is None:
                     secs = DEFER_FALLBACK_SECONDS
                     log(f'{desc}: 未识别到剩余时间，按兜底 {secs} 秒后再来收尾')
-                until = datetime.now() + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
+                until = read_at + timedelta(seconds=secs + DEFER_END_MARGIN_SECONDS)
                 self.pending = {'in_name': in_name, 'end_name': end_name, 'until': until,
                                 'on_finish': on_finish, 'desc': desc, 'encourage': encourage}
                 log(f'{desc}: 进行中，预计 {secs} 秒后结束（{until:%H:%M:%S} 收尾），先调度其他任务')
@@ -696,17 +698,15 @@ class DeviceScenario:
                 time.sleep(CLICK_INTERVAL)
         raise RuntimeError(f'{desc}: 未检测到进行中或结束状态')
 
-    def _encourage_burst(self) -> None:
+    def _encourage_burst(self) -> int:
         """在"鼓励宠物"按钮可见的页面上快速点击 schedule.encourage_times 次。
 
-        按钮在学习/打工进行中页面常驻，结算页实测没有（日志连续 0/50），
-        所以非阻塞调度（defer_wait）在登记 pending（正停在进行中页面）时就地点击；
-        结算页路径保留调用兜底。按钮不是一直渲染，每轮 see 不到就短等重试，
-        最多 times*3 轮防卡死。
+        按钮在学习/打工地图上常驻，道具面板展开时也能点击。
+        返回实际点击次数，供开课/开工入口避免登记 pending 前重复鼓励。
         """
         times = int(getattr(self.cfg.schedule, 'encourage_times', 0) or 0)
         if times <= 0:
-            return
+            return 0
         clicked = 0
         # 先找一次按钮位置（see 是全树 dump ~0.8s，按钮位置固定；找到后单轮连点
         # 不再重查。找不到短等重试几次仍没有就放弃——按钮可能不在当前页/未渲染）
@@ -718,13 +718,14 @@ class DeviceScenario:
             time.sleep(0.1)
         if not hit:
             log(f'鼓励宠物: 未找到按钮，跳过（0/{times} 次）')
-            return
+            return 0
         x, y = hit[0], hit[1]
         for _ in range(times):
             self.click(x, y)
             clicked += 1
             time.sleep(0.1)  # 点击间隔（快速连点）
         log(f'鼓励宠物: 快速点击 {clicked}/{times} 次')
+        return clicked
 
     def finish_pending(self) -> bool:
         """pending 到点收尾：回主页面出门，结算页（学习"教师评语"/打工"打工总结"
@@ -846,6 +847,9 @@ class DeviceScenario:
                 n = increment_progress(HIRE_FRIEND_PROGRESS_FILE)
                 log(f'打工总结含雇佣好友 {matched}，已计入雇佣好友次数（{n} 次）')
             return 'work'
+        if any(any(state in text for state in ('正在学习', '学习中', '正在打工', '打工中',
+                                                '正在冒险', '冒险中')) for text in texts):
+            return None
         if self.see('adventure_end', screen, source):
             return 'adventure'
         return None

@@ -270,14 +270,15 @@ class SchoolScenario(DeviceScenario):
         self._milk_attempted = False
         self.click_until_gone_or_see('school_start', 'school_in', '开始学习')
         log('已进入课堂，等待下课...')
-        drink_milk_once(self)
+        encouraged = drink_milk_once(self)
         self._detect_duration_from_remaining()
         if self.defer_wait:
             # 延时收尾：进行中登记 pending（到点由调度器 finish_pending 收尾）或
             # 已结束原地收尾，然后回主页面；计数统一走 on_finish（count_cross），
             # 本地 learned 不再自增，防止重复计数
             self.defer_busy_end('school_in', 'school_end',
-                                self._finish_deferred_class, '上课', encourage=True)
+                                self._finish_deferred_class, '上课', encourage=True,
+                                encourage_on_start=not encouraged)
             self.ensure_main_page()
             return False
         return self.wait_class_end()
